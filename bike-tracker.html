@@ -6,6 +6,7 @@
 <title>Cadence Log — Ride Tracker</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <style>
   :root{
     --bg:#14171a;
@@ -115,6 +116,8 @@
     line-height:1.5;
   }
   .banner.show{display:block;}
+  .banner a{color:var(--speed);text-decoration:underline;}
+  .banner a:hover{color:var(--power);}
 
   .readouts{
     display:grid;
@@ -198,6 +201,44 @@
   }
   @media (max-width:520px){
     .stats-grid{grid-template-columns:repeat(3, 1fr);}
+  }
+
+  .route-section{margin-bottom:32px;}
+  .follow-toggle{
+    display:flex;align-items:center;gap:6px;
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px;color:var(--text-muted);
+    cursor:pointer;user-select:none;
+  }
+  .follow-toggle input{accent-color:var(--power);}
+  .route-inputs{
+    display:flex;flex-wrap:wrap;
+    gap:8px;
+    margin:10px 0;
+  }
+  .route-inputs input[type="text"]{
+    flex:1 1 160px;
+    background:var(--surface-2);
+    border:1px solid var(--border);
+    border-radius:8px;
+    color:var(--text);
+    padding:9px 12px;
+    font-family:'Space Grotesk',sans-serif;
+    font-size:14px;
+  }
+  .route-inputs input[type="text"]:focus-visible{outline:2px solid var(--speed);outline-offset:1px;}
+  .route-status{
+    font-family:'JetBrains Mono',monospace;
+    font-size:12px;
+    color:var(--text-muted);
+    margin-bottom:10px;
+  }
+  #routeMap{
+    height:260px;
+    border-radius:var(--radius);
+    border:1px solid var(--border);
+    background:var(--surface);
+    overflow:hidden;
   }
 
   .session-bar{
@@ -371,7 +412,7 @@
   </header>
 
   <div class="banner" id="unsupportedBanner">
-    This browser doesn't support Web Bluetooth. Open this page in Chrome or Edge on desktop or Android to connect to your sensor.
+    This browser doesn't support Web Bluetooth.
   </div>
 
   <div class="settings" id="settingsPanel">
@@ -589,7 +630,23 @@
   });
 
   // ---------- bluetooth support check ----------
+  function isIOSDevice(){
+    // iPhones/iPods report clearly; iPadOS 13+ disguises itself as "MacIntel" but
+    // is touch-capable, which real Macs are not.
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  }
+
   if (!navigator.bluetooth) {
+    if (isIOSDevice()){
+      els.unsupportedBanner.innerHTML =
+        `Apple blocks Web Bluetooth in every browser on iOS/iPadOS, including Chrome — even here it's still running Safari's engine under the hood. ` +
+        `To connect your sensor on this device, open this page in <a href="https://apps.apple.com/us/app/bluefy-web-ble-browser/id1492822055" target="_blank" rel="noopener">Bluefy – Web BLE Browser</a> (a free app), ` +
+        `or install the <a href="https://apps.apple.com/us/app/ioswebble/id6761301368" target="_blank" rel="noopener">ioswebble</a> Safari extension and use Safari instead (requires iOS 26+).`;
+    } else {
+      els.unsupportedBanner.textContent =
+        "This browser doesn't support Web Bluetooth. Open this page in Chrome or Edge on desktop or Android to connect to your sensor.";
+    }
     els.unsupportedBanner.classList.add('show');
     els.connectBtn.disabled = true;
   }
@@ -792,16 +849,29 @@
     if (isRiding) stopRide();
   }
 
+  // Bluefy (and some other non-Chrome Web Bluetooth implementations) don't resolve the
+  // human-readable short names Chrome accepts (e.g. 'fitness_machine'). Explicit
+  // Bluetooth SIG UUIDs work identically everywhere, so we use those instead.
+  const UUID = {
+    fitnessMachine: '00001826-0000-1000-8000-00805f9b34fb',
+    indoorBikeData: '00002ad2-0000-1000-8000-00805f9b34fb',
+    cyclingPower: '00001818-0000-1000-8000-00805f9b34fb',
+    cyclingPowerMeasurement: '00002a63-0000-1000-8000-00805f9b34fb',
+    cyclingSpeedCadence: '00001816-0000-1000-8000-00805f9b34fb',
+    cscMeasurement: '00002a5b-0000-1000-8000-00805f9b34fb',
+    deviceInformation: '0000180a-0000-1000-8000-00805f9b34fb',
+  };
+
   async function connect(){
     try{
       setStatus('connecting', 'connecting…');
       device = await navigator.bluetooth.requestDevice({
         filters: [
-          { services: ['fitness_machine'] },
-          { services: ['cycling_power'] },
-          { services: ['cycling_speed_and_cadence'] },
+          { services: [UUID.fitnessMachine] },
+          { services: [UUID.cyclingPower] },
+          { services: [UUID.cyclingSpeedCadence] },
         ],
-        optionalServices: ['fitness_machine', 'cycling_power', 'cycling_speed_and_cadence', 'device_information']
+        optionalServices: [UUID.fitnessMachine, UUID.cyclingPower, UUID.cyclingSpeedCadence, UUID.deviceInformation]
       });
       device.addEventListener('gattserverdisconnected', onDisconnected);
       logEvent('connect', `device picked: <b>${device.name || '(unnamed)'}</b>, id=${device.id}`);
@@ -812,8 +882,8 @@
 
       usingFTMS = false;
       try{
-        const ftms = await server.getPrimaryService('fitness_machine');
-        const indoorBike = await ftms.getCharacteristic('indoor_bike_data');
+        const ftms = await server.getPrimaryService(UUID.fitnessMachine);
+        const indoorBike = await ftms.getCharacteristic(UUID.indoorBikeData);
         await indoorBike.startNotifications();
         indoorBike.addEventListener('characteristicvaluechanged', handleIndoorBikeData);
         usingFTMS = true;
@@ -823,16 +893,16 @@
       if (!usingFTMS){
         let gotPower = false, gotSpeed = false;
         try{
-          const cps = await server.getPrimaryService('cycling_power');
-          const powerChar = await cps.getCharacteristic('cycling_power_measurement');
+          const cps = await server.getPrimaryService(UUID.cyclingPower);
+          const powerChar = await cps.getCharacteristic(UUID.cyclingPowerMeasurement);
           await powerChar.startNotifications();
           powerChar.addEventListener('characteristicvaluechanged', handlePowerMeasurement);
           gotPower = true;
           logEvent('connect', 'using <b>cycling_power</b> service — power notifications started');
         } catch(e){ logEvent('connect', 'no cycling_power service found'); }
         try{
-          const csc = await server.getPrimaryService('cycling_speed_and_cadence');
-          const cscChar = await csc.getCharacteristic('csc_measurement');
+          const csc = await server.getPrimaryService(UUID.cyclingSpeedCadence);
+          const cscChar = await csc.getCharacteristic(UUID.cscMeasurement);
           await cscChar.startNotifications();
           cscChar.addEventListener('characteristicvaluechanged', handleCSCMeasurement);
           gotSpeed = true;
