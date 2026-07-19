@@ -463,6 +463,20 @@
     <div class="timer" id="timerDisplay">00:00</div>
   </div>
 
+  <div class="route-section">
+    <div class="log-header">
+      <span class="log-title">Route</span>
+      <label class="follow-toggle"><input type="checkbox" id="followToggle" checked> Follow</label>
+    </div>
+    <div class="route-inputs">
+      <input type="text" id="routeFrom" placeholder="Start location">
+      <input type="text" id="routeTo" placeholder="Destination">
+      <button id="findRouteBtn">Find route</button>
+    </div>
+    <div class="route-status" id="routeStatus">Enter a start and destination to preview a route, then hit start ride to travel it.</div>
+    <div id="routeMap"></div>
+  </div>
+
   <div class="log-header">
     <span class="log-title">Ride log</span>
     <button class="log-clear" id="clearLog">Clear</button>
@@ -471,6 +485,7 @@
 
 </div>
 
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 (function(){
   const POWER_SCALE_MAX = 400; // watts mapped to full ring
@@ -497,6 +512,11 @@
     resistanceValue: document.getElementById('resistanceValue'),
     caloriesValue: document.getElementById('caloriesValue'),
     elapsedValue: document.getElementById('elapsedValue'),
+    routeFrom: document.getElementById('routeFrom'),
+    routeTo: document.getElementById('routeTo'),
+    findRouteBtn: document.getElementById('findRouteBtn'),
+    routeStatus: document.getElementById('routeStatus'),
+    followToggle: document.getElementById('followToggle'),
     rideBtn: document.getElementById('rideBtn'),
     timerDisplay: document.getElementById('timerDisplay'),
     logList: document.getElementById('logList'),
@@ -686,6 +706,7 @@
     if (isRiding && lastSpeedTs !== null){
       const deltaHours = (now - lastSpeedTs) / 3600000;
       distanceKm += kmh * deltaHours;
+      if (routeActive) updateRouteProgress(distanceKm);
     }
     lastSpeed = kmh;
     lastSpeedTs = now;
@@ -697,6 +718,117 @@
   function updateResistance(level){ els.resistanceValue.textContent = level; }
   function updateCalories(kcal){ els.caloriesValue.textContent = kcal; }
   function updateBikeElapsed(sec){ els.elapsedValue.textContent = fmtDuration(sec); }
+
+  // ---------- route / virtual ride map ----------
+  let map = null, routeLayer = null, riderMarker = null;
+  let routeCoords = [];   // [{lat, lng}, ...] along the route
+  let routeCumDist = [];  // cumulative km at each coordinate
+  let routeTotalKm = 0;
+  let routeActive = false;
+  let followRider = true;
+
+  function haversineKm(a, b){
+    const R = 6371;
+    const dLat = (b.lat - a.lat) * Math.PI / 180;
+    const dLng = (b.lng - a.lng) * Math.PI / 180;
+    const la1 = a.lat * Math.PI / 180, la2 = b.lat * Math.PI / 180;
+    const h = Math.sin(dLat/2)**2 + Math.cos(la1) * Math.cos(la2) * Math.sin(dLng/2)**2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+
+  function initMap(){
+    if (map) return;
+    map = L.map('routeMap');
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank">OpenStreetMap</a> contributors'
+    }).addTo(map);
+    map.setView([52.2, 5.5], 6);
+  }
+
+  async function geocode(query){
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`);
+    if (!res.ok) throw new Error('Geocoding request failed');
+    const data = await res.json();
+    if (!data.length) throw new Error(`Location not found: "${query}"`);
+    return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), label: data[0].display_name };
+  }
+
+  async function findRoute(){
+    const fromQ = els.routeFrom.value.trim();
+    const toQ = els.routeTo.value.trim();
+    if (!fromQ || !toQ){
+      els.routeStatus.textContent = 'Enter a start and destination.';
+      return;
+    }
+    initMap();
+    els.findRouteBtn.disabled = true;
+    els.routeStatus.textContent = 'Looking up locations…';
+    try{
+      const [from, to] = await Promise.all([geocode(fromQ), geocode(toQ)]);
+
+      els.routeStatus.textContent = 'Fetching route…';
+      const url = `https://router.project-osrm.org/route/v1/bike/${from.lng},${from.lat};${to.lng},${to.lat}?overview=full&geometries=geojson`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('Routing request failed');
+      const data = await res.json();
+      if (!data.routes || !data.routes.length) throw new Error('No cycling route found between those points.');
+
+      const coords = data.routes[0].geometry.coordinates.map(c => ({ lat: c[1], lng: c[0] }));
+      routeCoords = coords;
+      routeCumDist = [0];
+      for (let i = 1; i < coords.length; i++){
+        routeCumDist.push(routeCumDist[i-1] + haversineKm(coords[i-1], coords[i]));
+      }
+      routeTotalKm = routeCumDist[routeCumDist.length - 1];
+      routeActive = true;
+
+      if (routeLayer) map.removeLayer(routeLayer);
+      routeLayer = L.polyline(coords.map(c => [c.lat, c.lng]), { color: '#4dc8ff', weight: 4 }).addTo(map);
+      map.fitBounds(routeLayer.getBounds(), { padding: [24, 24] });
+
+      if (riderMarker) map.removeLayer(riderMarker);
+      riderMarker = L.circleMarker([coords[0].lat, coords[0].lng], {
+        radius: 8, color: '#f4c430', weight: 2, fillColor: '#f4c430', fillOpacity: 1
+      }).addTo(map);
+
+      els.routeStatus.textContent = `Route ready — ${routeTotalKm.toFixed(1)} km. Start your ride to begin travelling it.`;
+    } catch(err){
+      console.error(err);
+      routeActive = false;
+      els.routeStatus.textContent = 'Could not build route: ' + err.message;
+    } finally {
+      els.findRouteBtn.disabled = false;
+    }
+  }
+
+  function updateRouteProgress(coveredKm){
+    if (!routeActive || routeCoords.length === 0) return;
+    const clamped = Math.min(coveredKm, routeTotalKm);
+    let i = 0;
+    while (i < routeCumDist.length - 1 && routeCumDist[i+1] < clamped) i++;
+    const segStart = routeCumDist[i];
+    const segEnd = routeCumDist[i+1] !== undefined ? routeCumDist[i+1] : segStart;
+    const segLen = segEnd - segStart;
+    const t = segLen > 0 ? (clamped - segStart) / segLen : 0;
+    const a = routeCoords[i];
+    const b = routeCoords[i+1] || a;
+    const lat = a.lat + (b.lat - a.lat) * t;
+    const lng = a.lng + (b.lng - a.lng) * t;
+
+    if (riderMarker) riderMarker.setLatLng([lat, lng]);
+    if (followRider && map) map.panTo([lat, lng], { animate: true });
+
+    const pct = routeTotalKm > 0 ? Math.min(100, (clamped / routeTotalKm) * 100) : 0;
+    els.routeStatus.textContent = clamped >= routeTotalKm
+      ? `Route complete — ${routeTotalKm.toFixed(1)} km! 🏁`
+      : `${clamped.toFixed(2)} / ${routeTotalKm.toFixed(1)} km · ${pct.toFixed(0)}%`;
+  }
+
+  els.findRouteBtn.addEventListener('click', findRoute);
+  els.followToggle.addEventListener('change', () => {
+    followRider = els.followToggle.checked;
+  });
 
   // ---------- FTMS indoor bike data (0x2AD2) ----------
   function handleIndoorBikeData(event){
@@ -941,6 +1073,7 @@
     rideStartTs = Date.now();
     powerSum = 0; powerCount = 0; powerMax = 0; distanceKm = 0;
     lastSpeedTs = performance.now();
+    if (routeActive) updateRouteProgress(0);
     els.rideBtn.textContent = 'Stop ride';
     els.rideBtn.classList.add('stop');
     els.rideBtn.classList.remove('primary');
