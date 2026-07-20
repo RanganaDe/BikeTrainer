@@ -281,6 +281,16 @@
     overflow:hidden;
   }
 
+  .ride3d-section{margin-bottom:20px;}
+  #ride3dCanvas{
+    height:260px;
+    border-radius:var(--radius);
+    border:1px solid var(--border);
+    background:#0b0f14;
+    overflow:hidden;
+  }
+  #ride3dCanvas canvas{display:block;width:100%;height:100%;}
+
   .session-bar{
     display:flex;
     align-items:center;
@@ -524,6 +534,13 @@
     <div class="stat-tile"><div class="stat-value" id="elapsedValue">–</div><div class="stat-label">Bike timer</div></div>
   </div>
 
+  <div class="ride3d-section">
+    <div class="log-header">
+      <span class="log-title">Ride view</span>
+    </div>
+    <div id="ride3dCanvas"></div>
+  </div>
+
   <div class="session-bar">
     <button class="primary" id="rideBtn" disabled>Start ride</button>
     <div class="timer" id="timerDisplay">00:00</div>
@@ -552,6 +569,7 @@
 </div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore-compat.js"></script>
@@ -585,6 +603,7 @@
     routeTo: document.getElementById('routeTo'),
     findRouteBtn: document.getElementById('findRouteBtn'),
     routeStatus: document.getElementById('routeStatus'),
+    ride3dCanvas: document.getElementById('ride3dCanvas'),
     followToggle: document.getElementById('followToggle'),
     accountBar: document.getElementById('accountBar'),
     accountAvatar: document.getElementById('accountAvatar'),
@@ -673,15 +692,14 @@
   // Until this is filled in, the app runs local-only (exactly as before) and the
   // sign-in button is disabled — nothing breaks if you haven't set this up yet.
   const firebaseConfig = {
-    apiKey: "AIzaSyC4TRY0G1qGNfinW8gkyMLvAhffgenBAWk",
-    authDomain: "cadence-log.firebaseapp.com",
-    projectId: "cadence-log",
-    storageBucket: "cadence-log.firebasestorage.app",
-    messagingSenderId: "1085737653871",
-    appId: "1:1085737653871:web:9bbffa0b2a4e67409b5f9a"
+    apiKey: "YOUR_API_KEY",
+    authDomain: "YOUR_PROJECT.firebaseapp.com",
+    projectId: "YOUR_PROJECT_ID",
+    storageBucket: "YOUR_PROJECT.appspot.com",
+    messagingSenderId: "YOUR_SENDER_ID",
+    appId: "YOUR_APP_ID"
   };
-  // const cloudConfigured = firebaseConfig.apiKey !== "AIzaSyC4TRY0G1qGNfinW8gkyMLvAhffgenBAWk";
-  const cloudConfigured = true;
+  const cloudConfigured = firebaseConfig.apiKey !== "YOUR_API_KEY";
 
   let fbAuth = null, fbDb = null, currentUser = null;
 
@@ -1045,6 +1063,119 @@
   els.followToggle.addEventListener('change', () => {
     followRider = els.followToggle.checked;
   });
+
+  // ---------- 3D ride view ----------
+  // A recycled "conveyor belt" of road segments that scroll toward the camera
+  // at a rate driven by your live speed (`lastSpeed`, already tracked above).
+  // Purely visual — no relation to the OSM route or session distance.
+  const VISUAL_SCALE = 0.4; // tune how fast the world scrolls relative to real speed
+  let ride3dBobPhase = 0;
+
+  function init3D(){
+    if (!window.THREE || !els.ride3dCanvas) return;
+    const container = els.ride3dCanvas;
+    const width = container.clientWidth || 300;
+    const height = container.clientHeight || 260;
+
+    const scene = new THREE.Scene();
+    const skyColor = 0x8fc6e8;
+    scene.background = new THREE.Color(skyColor);
+    scene.fog = new THREE.Fog(skyColor, 25, 130);
+
+    const camera = new THREE.PerspectiveCamera(58, width / height, 0.1, 500);
+    camera.position.set(0, 2.1, 6);
+    camera.lookAt(0, 1.2, -20);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(width, height);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    container.innerHTML = '';
+    container.appendChild(renderer.domElement);
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x3a5f3a, 0.9));
+    const sun = new THREE.DirectionalLight(0xffffff, 0.7);
+    sun.position.set(10, 20, 10);
+    scene.add(sun);
+
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(400, 400),
+      new THREE.MeshLambertMaterial({ color: 0x4a7a45 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.01;
+    scene.add(ground);
+
+    const SEG_LEN = 20, SEG_COUNT = 10, ROAD_WIDTH = 6;
+    const roadMat = new THREE.MeshLambertMaterial({ color: 0x33363b });
+    const stripeMat = new THREE.MeshBasicMaterial({ color: 0xf4f4f0 });
+    const trunkMat = new THREE.MeshLambertMaterial({ color: 0x6b4a2f });
+    const leavesMat = new THREE.MeshLambertMaterial({ color: 0x2f7d3a });
+    const segments = [];
+
+    for (let i = 0; i < SEG_COUNT; i++){
+      const group = new THREE.Group();
+      const road = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_WIDTH, SEG_LEN), roadMat);
+      road.rotation.x = -Math.PI / 2;
+      group.add(road);
+
+      for (let s = 0; s < 4; s++){
+        const stripe = new THREE.Mesh(new THREE.PlaneGeometry(0.25, 2), stripeMat);
+        stripe.rotation.x = -Math.PI / 2;
+        stripe.position.set(0, 0.01, -SEG_LEN/2 + s * (SEG_LEN/4) + 1);
+        group.add(stripe);
+      }
+
+      if (i % 2 === 0){
+        [-1, 1].forEach(side => {
+          const tree = new THREE.Group();
+          const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.15, 1.4, 6), trunkMat);
+          trunk.position.y = 0.7;
+          const leaves = new THREE.Mesh(new THREE.ConeGeometry(1, 2.2, 8), leavesMat);
+          leaves.position.y = 2.1;
+          tree.add(trunk, leaves);
+          tree.position.set(side * (ROAD_WIDTH/2 + 2.5), 0, -SEG_LEN/2);
+          group.add(tree);
+        });
+      }
+
+      group.position.z = -i * SEG_LEN;
+      scene.add(group);
+      segments.push(group);
+    }
+    const totalLen = SEG_LEN * SEG_COUNT;
+
+    function resize(){
+      const w = container.clientWidth, h = container.clientHeight;
+      if (!w || !h) return;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    }
+    window.addEventListener('resize', resize);
+
+    const clock = new THREE.Clock();
+    function animate(){
+      requestAnimationFrame(animate);
+      const dt = Math.min(clock.getDelta(), 0.1);
+      const speedMS = (lastSpeed || 0) * 1000 / 3600;
+      const visualSpeed = speedMS * VISUAL_SCALE;
+
+      segments.forEach(seg => {
+        seg.position.z += visualSpeed * dt;
+        if (seg.position.z > 12) seg.position.z -= totalLen;
+      });
+
+      if (visualSpeed > 0.02){
+        ride3dBobPhase += dt * (2 + visualSpeed * 1.5);
+        camera.position.y = 2.1 + Math.sin(ride3dBobPhase) * 0.025;
+      }
+
+      renderer.render(scene, camera);
+    }
+    animate();
+  }
+
+  init3D();
 
   // ---------- FTMS indoor bike data (0x2AD2) ----------
   function handleIndoorBikeData(event){
