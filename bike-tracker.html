@@ -692,14 +692,15 @@
   // Until this is filled in, the app runs local-only (exactly as before) and the
   // sign-in button is disabled — nothing breaks if you haven't set this up yet.
   const firebaseConfig = {
-    apiKey: "YOUR_API_KEY",
-    authDomain: "YOUR_PROJECT.firebaseapp.com",
-    projectId: "YOUR_PROJECT_ID",
-    storageBucket: "YOUR_PROJECT.appspot.com",
-    messagingSenderId: "YOUR_SENDER_ID",
-    appId: "YOUR_APP_ID"
+    apiKey: "AIzaSyC4TRY0G1qGNfinW8gkyMLvAhffgenBAWk",
+    authDomain: "cadence-log.firebaseapp.com",
+    projectId: "cadence-log",
+    storageBucket: "cadence-log.firebasestorage.app",
+    messagingSenderId: "1085737653871",
+    appId: "1:1085737653871:web:9bbffa0b2a4e67409b5f9a"
   };
-  const cloudConfigured = firebaseConfig.apiKey !== "YOUR_API_KEY";
+  // const cloudConfigured = firebaseConfig.apiKey !== "AIzaSyC4TRY0G1qGNfinW8gkyMLvAhffgenBAWk";
+  const cloudConfigured = true;
 
   let fbAuth = null, fbDb = null, currentUser = null;
 
