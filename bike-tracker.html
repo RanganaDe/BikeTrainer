@@ -1464,15 +1464,11 @@
 
 			// Local procedural curve calculations to prevent matrix generation errors
           function getRoadLayout(worldZ) {
-
-            const curveIntensity =
-                    Math.sin(worldZ*0.006)*2.5 +
-                    Math.cos(worldZ*0.014)*1.0;
-			const elevation = Math.sin(worldZ*0.01)*2.2;
-
+            // Curve/elevation disabled for now -- straight flat road while we
+            // confirm the disappearing-road issue is unrelated to this.
             return {
-              x: curveIntensity,
-              y: 0 // TODO change this to elevation when fixed.
+              x: 0,
+              y: 0
             };
           }
 			// Populate localized tracking data structure array
@@ -1618,6 +1614,7 @@
 			window.addEventListener('resize', resize);
 
 			const clock = new THREE.Clock();
+			let lastDiagLog = 0;
 
 			function animate() {
 				requestAnimationFrame(animate);
@@ -1635,94 +1632,60 @@
 				// Reposition mountain horizons softly against relative camera pathing
 				mountainGroup.position.x = -camera.position.x*0.85;
 
+				// TEMP DIAGNOSTIC: once a second, print enough state to actually see what's
+				// happening if the road still appears to vanish. Remove once resolved.
+				if (performance.now() - lastDiagLog > 1000){
+					lastDiagLog = performance.now();
+					console.log('[3D diag]', {
+						speedKmh: speedKmh.toFixed(1),
+						visualSpeed: visualSpeed.toFixed(2),
+						worldProgress: currentWorldProgress.toFixed(1),
+						fogNear: currentFog.near.toFixed(1),
+						fogFar: currentFog.far.toFixed(1),
+						fov: camera.fov.toFixed(1),
+						segZRange: [Math.min(...segments.map(s=>s.group.position.z)).toFixed(1),
+									Math.max(...segments.map(s=>s.group.position.z)).toFixed(1)],
+						camPos: [camera.position.x.toFixed(2), camera.position.y.toFixed(2), camera.position.z.toFixed(2)]
+					});
+				}
 
-	/*			segments.forEach(seg => {
-					// Track individual element spatial offsets based on overall distance covered
-					let calculatedZ = seg.initialZ + currentWorldProgress;
-					// Loop segment indices forward using modulo system tracking
-					const loops = Math.floor((calculatedZ - 16)/totalLen);
-					calculatedZ -= loops*totalLen;
-					const absoluteWorldZ = calculatedZ - currentWorldProgress;
-					const layout = getRoadLayout(absoluteWorldZ);
-					seg.group.position.z = calculatedZ;
+
+				// Each segment scrolls toward the camera every frame. Its "true" position
+				// along the infinite procedural path is (local z) - (total distance travelled),
+				// which stays stable forever since both grow by the same amount each frame --
+				// no loop-counting needed, and it doubles as a stable seed for curve/elevation.
+				segments.forEach(seg => {
+					seg.group.position.z += visualSpeed*dt;
+
+					const worldZ = seg.group.position.z - currentWorldProgress;
+					const layout = getRoadLayout(worldZ);
 					seg.group.position.x = layout.x;
 					seg.group.position.y = layout.y;
-					// Perform instant procedural geometry recycling tracking
-					const targetLoopIdentifier = loops;
-					if(seg.lastLoopTrack !== targetLoopIdentifier) {
-						populateScenery(seg.scenery, absoluteWorldZ);
-						seg.lastLoopTrack = targetLoopIdentifier;
+
+					if(seg.group.position.z > 20) {
+						seg.group.position.z -= totalLen;
+						const recycledWorldZ = seg.group.position.z - currentWorldProgress;
+						populateScenery(seg.scenery, recycledWorldZ);
 					}
-				});*/
-
-                // DEBUG
-              segments.forEach(seg => {
-
-                seg.group.position.z += visualSpeed * dt;
-
-                if(seg.group.position.z > 20) {
-
-                  seg.group.position.z -= totalLen;
-
-                  const worldZ = seg.group.position.z;
-
-                  const layout = getRoadLayout(worldZ);
-
-                  seg.group.position.x = layout.x;
-                  seg.group.position.y = layout.y;
-
-                  populateScenery(
-                          seg.scenery,
-                          worldZ
-                  );
-                }
-
-              });
-               // DEBUG
+				});
 
 
-				// Handle natural dynamic rider viewpoint translation modifications
-/*				if(visualSpeed > 0.05) {
-					ride3dBobPhase += dt*(3.5 + visualSpeed*0.8);// Natural micro-vibrations + pedaling movement calculations
+				// Straight road for now, so the camera just stays centered -- only a
+				// small vertical bob for pedalling feel, no sideways movement at all.
+				if(visualSpeed > 0.05) {
+					ride3dBobPhase += dt*(3.5 + visualSpeed*0.8); // micro-vibrations + pedalling rhythm
 					const bobValue = Math.sin(ride3dBobPhase)*(0.022 + speedRatio*0.01);
-					const leanValue = Math.cos(ride3dBobPhase*0.5)*(0.035 + speedRatio*0.02);
 					const microVibration = (Math.random() - 0.5)*(speedRatio*0.009);
 					camera.position.y = BASE_CAM_Y + bobValue + microVibration;
-					camera.position.x = leanValue;// Smoothly target focal view center dynamically down the curving path setup
-					const lookTargetZ = -18;
-					const lookTargetLayout = getRoadLayout(-currentWorldProgress + lookTargetZ);
-					camera.lookAt(lookTargetLayout.x*0.75, BASE_CAM_Y*0.8 + lookTargetLayout.y, lookTargetZ);
-					camera.rotation.z = -leanValue*0.35; // Natural lean physics
-				}*/
-				if(visualSpeed > 0.05) {
-
-					ride3dBobPhase += dt * (3.5 + visualSpeed * 0.8);
-
-					const bobValue =
-						Math.sin(ride3dBobPhase) *
-						(0.022 + speedRatio * 0.01);
-
-					const leanValue =
-						Math.cos(ride3dBobPhase * 0.5) *
-						(0.035 + speedRatio * 0.02);
-
-					camera.position.y =
-						BASE_CAM_Y + bobValue;
-
-					camera.position.x =
-						leanValue;
-
-					camera.lookAt(
-						0,
-						BASE_CAM_Y * 0.8,
-						-18
-					);
-
+					camera.position.x = 0;
+					camera.rotation.z = 0;
+					camera.lookAt(0, BASE_CAM_Y*0.8, -18);
 				}
 
 
 				else { // Return smoothly to standard idle positions when wheel stop tracking kicks in
 					camera.position.set(0, BASE_CAM_Y, 8);
+					camera.rotation.z = 0;
 					camera.lookAt(0, BASE_CAM_Y*0.8, -18);
 				}
 				renderer.render(scene, camera);
