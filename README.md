@@ -1,6 +1,6 @@
 Simple Bike trainer application for your smart bike with speed sensor
 
-## What this is
+## What this is about
 
 BikeTrainer is a smart bike trainer monitoring app that connects to Bluetooth cycling sensors (smart bikes with speed sensors, power meters, or cadence sensors) and displays real-time workout metrics with route tracking and 3D visualization. It logs rides locally and syncs data to Firebase for authenticated users.
 
