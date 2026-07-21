@@ -449,8 +449,8 @@
 		.street-name-label {
 			position: absolute;
 			top: 10px;
-			right: 10px;
-			max-width: 65%;
+			left: 10px;
+			max-width: 55%;
 			padding: 6px 12px;
 			background: rgba(20, 23, 26, 0.72);
 			border: 1px solid rgba(255, 255, 255, 0.12);
@@ -459,17 +459,42 @@
 			font-size: 12px;
 			font-weight: 600;
 			color: var(--text);
-			text-align: right;
+			text-align: left;
 			white-space: nowrap;
 			overflow: hidden;
 			text-overflow: ellipsis;
 			opacity: 0;
 			transition: opacity 0.25s ease;
 			pointer-events: none;
+			z-index: 2;
 		}
 
 		.street-name-label.show {
 			opacity: 1;
+		}
+
+		.minimap-wrap {
+			position: absolute;
+			top: 10px;
+			right: 10px;
+			width: 96px;
+			height: 96px;
+			border-radius: 10px;
+			overflow: hidden;
+			border: 1px solid rgba(255, 255, 255, 0.18);
+			box-shadow: 0 2px 10px rgba(0,0,0,0.35);
+			opacity: 0;
+			transition: opacity 0.25s ease;
+			pointer-events: none;
+			z-index: 2;
+		}
+
+		.minimap-wrap.show {
+			opacity: 1;
+		}
+
+		.minimap-wrap .leaflet-control-container {
+			display: none;
 		}
 
 		.session-bar {
@@ -848,6 +873,7 @@
 		<div class="ride3d-canvas-wrap">
 			<div id="ride3dCanvas"></div>
 			<div id="streetNameLabel" class="street-name-label"></div>
+			<div id="miniMapWrap" class="minimap-wrap"><div id="miniMap" style="width:100%;height:100%;"></div></div>
 		</div>
 	</div>
 
@@ -917,6 +943,7 @@
 			findRouteBtn: document.getElementById('findRouteBtn'),
 			routeStatus: document.getElementById('routeStatus'),
 			streetNameLabel: document.getElementById('streetNameLabel'),
+			miniMapWrap: document.getElementById('miniMapWrap'),
 			ride3dCanvas: document.getElementById('ride3dCanvas'),
 			followToggle: document.getElementById('followToggle'),
 			accountBar: document.getElementById('accountBar'),
@@ -1327,6 +1354,20 @@
 			map.setView([52.2, 5.5], 6);
 		}
 
+		// Small mirror map shown in the Ride view's corner while riding a route --
+		// same route line/rider position as the main map, just compact and always
+		// visible without scrolling down to the Route section.
+		let miniMap = null, miniRouteLayer = null, miniRiderMarker = null;
+		function initMiniMap() {
+			if(miniMap) return;
+			miniMap = L.map('miniMap', {
+				zoomControl: false, attributionControl: false, dragging: false,
+				scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false, keyboard: false, tap: false
+			});
+			L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(miniMap);
+			miniMap.setView([52.2, 5.5], 6);
+		}
+
 		async function geocode(query) {
 			const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(query)}`);
 			if(!res.ok) throw new Error('Geocoding request failed');
@@ -1393,12 +1434,24 @@
 					radius: 8, color: '#f4c430', weight: 2, fillColor: '#f4c430', fillOpacity: 1
 				}).addTo(map);
 
+				initMiniMap();
+				if(miniRouteLayer) miniMap.removeLayer(miniRouteLayer);
+				miniRouteLayer = L.polyline(coords.map(c => [c.lat, c.lng]), {color: '#4dc8ff', weight: 3}).addTo(miniMap);
+				miniMap.fitBounds(miniRouteLayer.getBounds(), {padding: [4, 4]});
+				if(miniRiderMarker) miniMap.removeLayer(miniRiderMarker);
+				miniRiderMarker = L.circleMarker([coords[0].lat, coords[0].lng], {
+					radius: 5, color: '#f4c430', weight: 1.5, fillColor: '#f4c430', fillOpacity: 1
+				}).addTo(miniMap);
+				if(els.miniMapWrap) els.miniMapWrap.classList.add('show');
+				setTimeout(() => { if(miniMap) miniMap.invalidateSize(); }, 50);
+
 				els.routeStatus.textContent = `Route ready — ${routeTotalKm.toFixed(1)} km. Start your ride to begin travelling it.`;
 			} catch(err) {
 				console.error(err);
 				routeActive = false;
 				routeStreetSegments = [];
 				if(els.streetNameLabel) els.streetNameLabel.classList.remove('show');
+				if(els.miniMapWrap) els.miniMapWrap.classList.remove('show');
 				if(clear3DRoute) clear3DRoute();
 				els.routeStatus.textContent = 'Could not build route: ' + err.message;
 			} finally {
@@ -1428,6 +1481,9 @@
 
 			if(riderMarker) riderMarker.setLatLng([lat, lng]);
 			if(followRider && map) map.panTo([lat, lng], {animate: true});
+
+			if(miniRiderMarker) miniRiderMarker.setLatLng([lat, lng]);
+			if(miniMap) miniMap.setView([lat, lng], 16, {animate: false});
 
 			if(els.streetNameLabel){
 				const name = getStreetNameAtKm(clamped);
@@ -1937,8 +1993,8 @@
 				if(routeRibbonGroup) { scene.remove(routeRibbonGroup); routeRibbonGroup = null; }
 				routeCameraPath = null;
 				segments.forEach(s => { s.group.visible = true; });
-				traffic.forEach(t => { t.mesh.visible = true; });
 				rivalGroup.visible = true;
+				rivalGroup.position.set(-LANE_OFFSET, 0, -70);
 			}
 
 			function buildRouteRibbon(coordsLatLng) {
@@ -1960,7 +2016,7 @@
 						false, 'centripetal'
 					);
 					const curveLen = curve.getLength();
-					const sampleCount = Math.min(2000, Math.max(controlPoints.length, Math.round(curveLen/2.2)));
+					const sampleCount = Math.min(1200, Math.max(controlPoints.length, Math.round(curveLen/3.5)));
 					points = curve.getSpacedPoints(sampleCount).map(v => ({x: v.x, z: v.z}));
 				}
 
@@ -2029,18 +2085,35 @@
 					return true;
 				}
 
-				// Dashed centre stripe -- small oriented planks placed along the path,
-				// same visual as the procedural road's stripe, just following real curves.
-				const dashLen = 2, dashGap = 2.4;
+				// Dashed centre stripe -- previously one Group+Mesh PER dash (1000+
+				// separate draw calls on a long route, a real performance cost).
+				// Built as a single merged geometry instead: same visual, one draw call.
+				const dashLen = 2, dashGap = 4;
+				const dashPositions = [];
+				const dashIndices = [];
+				let dashVertCount = 0;
 				for(let d = 0; d < totalLen; d += dashLen + dashGap) {
-					const {p, dx, dz} = directionAt(d);
-					const dashWrap = new THREE.Group();
-					const dash = new THREE.Mesh(new THREE.PlaneGeometry(0.16, dashLen), stripeMat);
-					dash.rotation.x = -Math.PI/2;
-					dashWrap.add(dash);
-					dashWrap.position.set(p.x, 0.006, p.z);
-					dashWrap.lookAt(p.x + dx, 0.006, p.z + dz);
-					routeRibbonGroup.add(dashWrap);
+					const p0 = pointAtDistance(pathObj, d);
+					const p1 = pointAtDistance(pathObj, Math.min(d + dashLen, totalLen));
+					let dx = p1.x - p0.x, dz = p1.z - p0.z;
+					const len = Math.sqrt(dx*dx + dz*dz) || 1;
+					const px = -dz/len, pz = dx/len;
+					const halfW = 0.09;
+					const a = [p0.x - px*halfW, 0.006, p0.z - pz*halfW];
+					const b = [p0.x + px*halfW, 0.006, p0.z + pz*halfW];
+					const c = [p1.x - px*halfW, 0.006, p1.z - pz*halfW];
+					const dd = [p1.x + px*halfW, 0.006, p1.z + pz*halfW];
+					dashPositions.push(...a, ...b, ...c, ...dd);
+					const i0 = dashVertCount;
+					dashIndices.push(i0, i0+1, i0+2,  i0+1, i0+3, i0+2);
+					dashVertCount += 4;
+				}
+				if(dashPositions.length){
+					const dashGeom = new THREE.BufferGeometry();
+					dashGeom.setAttribute('position', new THREE.Float32BufferAttribute(dashPositions, 3));
+					dashGeom.setIndex(dashIndices);
+					dashGeom.computeVertexNormals();
+					routeRibbonGroup.add(new THREE.Mesh(dashGeom, stripeMat));
 				}
 
 				// Roadside scenery -- reuses the exact same populateScenery() the procedural
@@ -2062,9 +2135,8 @@
 				scene.add(routeRibbonGroup);
 				routeCameraPath = pathObj;
 
-				// Hide the infinite procedural world and its traffic/rival while a real route is active
+				// Hide the infinite procedural road and the rival while a real route is active.
 				segments.forEach(s => { s.group.visible = false; });
-				traffic.forEach(t => { t.mesh.visible = false; });
 				rivalGroup.visible = false;
 			}
 
@@ -2186,46 +2258,11 @@
 			applyTimeOfDay();
 			setInterval(applyTimeOfDay, 60000); // real time keeps moving during a long ride
 
-			// ---------- Traffic: oncoming cars + a rival cyclist ----------
-			// Scrolling scenery alone is a weak speed cue. Foreground objects with
-			// their own motion -- especially oncoming ones -- read as "faster" far
-			// more clearly, and the rival gives a direct "am I gaining on them" cue
-			// tied straight to real pedalling effort.
+			// ---------- Rival cyclist ----------
+			// Holds a steady pace; you catch up when you're pedalling harder. Kept
+			// procedural-mode only (like before) -- it's a single cheap entity, not
+			// the source of the slowdown, so no need to touch it.
 			const LANE_OFFSET = ROAD_WIDTH/4;
-
-			const carBodyGeom = new THREE.BoxGeometry(1.6, 0.55, 3.2);
-			const carRoofGeom = new THREE.BoxGeometry(1.3, 0.5, 1.6);
-			const carWheelGeom = new THREE.CylinderGeometry(0.28, 0.28, 0.22, 8);
-			const carWheelMat = new THREE.MeshStandardMaterial({color: 0x1a1a1a, roughness: 0.8});
-			const carRoofMat = new THREE.MeshStandardMaterial({color: 0x9fd3f0, roughness: 0.3, metalness: 0.2});
-			const carColors = [0xd6402f, 0x2f6fd6, 0xe8e8e8, 0x3a3a3a, 0xd8b23c];
-
-			function makeCar(color){
-				const car = new THREE.Group();
-				const body = new THREE.Mesh(carBodyGeom, new THREE.MeshStandardMaterial({color, roughness: 0.45, metalness: 0.35}));
-				body.position.y = 0.5;
-				const roof = new THREE.Mesh(carRoofGeom, carRoofMat);
-				roof.position.set(0, 0.95, -0.2);
-				car.add(body, roof);
-				[[-0.75,-1.1],[0.75,-1.1],[-0.75,1.1],[0.75,1.1]].forEach(([wx,wz]) => {
-					const wheel = new THREE.Mesh(carWheelGeom, carWheelMat);
-					wheel.rotation.z = Math.PI/2;
-					wheel.position.set(wx, 0.28, wz);
-					car.add(wheel);
-				});
-				return car;
-			}
-
-			const TRAFFIC_COUNT = 3;
-			const traffic = [];
-			for (let t = 0; t < TRAFFIC_COUNT; t++){
-				const car = makeCar(carColors[t % carColors.length]);
-				car.position.set(LANE_OFFSET, 0, -40 - t*70 - Math.random()*40);
-				scene.add(car);
-				traffic.push({ mesh: car, ownSpeed: 3.2 + Math.random()*2.4 });
-			}
-
-			// Rival cyclist -- holds a steady pace; you catch up when you're pedalling harder.
 			const rivalGroup = new THREE.Group();
 			const rivalFrame = new THREE.Mesh(
 				new THREE.BoxGeometry(0.08, 0.5, 1.1),
@@ -2322,20 +2359,10 @@
 						}
 					});
 
-					// Oncoming traffic closes in at (your speed + their own speed) --
-					// approaches faster the harder you pedal, on top of their own pace.
-					// Frozen entirely (not even their own idle pace) until a ride is active.
+					// Rival cyclist holds a steady pace -- you visibly close the gap
+					// (or fall behind) depending on how hard you're actually pedalling.
+					// Frozen entirely until a ride is active.
 					if(isRiding){
-						traffic.forEach(t => {
-							t.mesh.position.z += (visualSpeed + t.ownSpeed)*dt;
-							if(t.mesh.position.z > 15){
-								t.mesh.position.z = -160 - Math.random()*80;
-								t.mesh.position.x = LANE_OFFSET + (Math.random() - 0.5)*0.4;
-							}
-						});
-
-						// Rival cyclist holds a steady pace -- you visibly close the gap
-						// (or fall behind) depending on how hard you're actually pedalling.
 						rivalGroup.position.z += (visualSpeed - RIVAL_OWN_SPEED)*dt;
 						rivalGroup.children.forEach(c => { if(c.geometry && c.geometry.type === 'TorusGeometry') c.rotation.x += visualSpeed*dt*1.6; });
 						if(rivalGroup.position.z > 15){
