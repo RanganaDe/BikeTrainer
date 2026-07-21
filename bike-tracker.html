@@ -473,6 +473,27 @@
 			opacity: 1;
 		}
 
+		.poi-name-label {
+			top: auto;
+			bottom: 10px;
+			left: 10px;
+			max-width: 70%;
+			border-color: rgba(244, 196, 48, 0.35);
+			color: var(--power);
+		}
+
+		.resistance-label {
+			top: auto;
+			bottom: 10px;
+			left: auto;
+			right: 10px;
+			max-width: 45%;
+			text-align: right;
+			border-color: rgba(77, 200, 255, 0.35);
+			color: var(--speed);
+			font-family: 'JetBrains Mono', monospace;
+		}
+
 		.minimap-wrap {
 			position: absolute;
 			top: 10px;
@@ -873,7 +894,9 @@
 		<div class="ride3d-canvas-wrap">
 			<div id="ride3dCanvas"></div>
 			<div id="streetNameLabel" class="street-name-label"></div>
-			<div id="miniMapWrap" class="minimap-wrap"><div id="miniMap" style="width:100%;height:100%;"></div></div>
+			<div id="poiNameLabel" class="street-name-label poi-name-label"></div>
+			<div id="resistanceSuggestLabel" class="street-name-label resistance-label"></div>
+			<div id="miniMapWrap" class="minimap-wrap"><div id="miniMap" style="position:absolute; width:170%; height:170%; left:-35%; top:-35%; transform-origin:50% 50%;"></div></div>
 		</div>
 	</div>
 

@@ -198,6 +198,219 @@
 			const houseWindowGeom = new THREE.BoxGeometry(0.5, 0.5, 0.06);
 			const houseWindowMat = new THREE.MeshStandardMaterial({color: 0xbfe0ea, roughness: 0.3, metalness: 0.2, emissive: 0x1a2a30, emissiveIntensity: 0.15});
 
+			// Real-world points of interest along a fetched route (hospitals, schools,
+			// fuel stations, train stations, generic houses) -- see placeRoutePOIs().
+			// Reuses the house geometries above where a plain building shape works.
+			const poiHospitalWallMat = new THREE.MeshStandardMaterial({color: 0xf2f0ea, roughness: 0.8});
+			const poiHospitalCrossMat = new THREE.MeshStandardMaterial({color: 0xd83c3c, roughness: 0.5, emissive: 0x330000, emissiveIntensity: 0.15});
+			const poiSchoolWallMat = new THREE.MeshStandardMaterial({color: 0xd8b878, roughness: 0.85});
+			const poiSchoolRoofMat = new THREE.MeshStandardMaterial({color: 0x4a5568, roughness: 0.7});
+			const poiFlagMat = new THREE.MeshStandardMaterial({color: 0x2f7dd8, roughness: 0.6, side: THREE.DoubleSide});
+			const poiFuelCanopyMat = new THREE.MeshStandardMaterial({color: 0xd8d8d0, roughness: 0.5, metalness: 0.2});
+			const poiFuelPoleMat = new THREE.MeshStandardMaterial({color: 0xc0392b, roughness: 0.6});
+			const poiFuelBoothMat = new THREE.MeshStandardMaterial({color: 0xe8e4d8, roughness: 0.8});
+			const poiStationWallMat = new THREE.MeshStandardMaterial({color: 0x8a6a52, roughness: 0.85});
+			const poiStationRoofMat = new THREE.MeshStandardMaterial({color: 0x2e2e34, roughness: 0.7});
+			const poiStationSignMat = new THREE.MeshStandardMaterial({color: 0x1c5fae, roughness: 0.4, emissive: 0x0a2540, emissiveIntensity: 0.2});
+			const poiChurchWallMat = new THREE.MeshStandardMaterial({color: 0xd6cdbb, roughness: 0.8});
+			const poiChurchSteepleMat = new THREE.MeshStandardMaterial({color: 0x4a4a52, roughness: 0.6});
+			const poiShopWallMat = new THREE.MeshStandardMaterial({color: 0xdedede, roughness: 0.7});
+			const poiShopWindowMat = new THREE.MeshStandardMaterial({color: 0x9fd0e6, roughness: 0.2, metalness: 0.3});
+			const poiShopSignMat = new THREE.MeshStandardMaterial({color: 0xe0483c, roughness: 0.5, emissive: 0x3a0e0a, emissiveIntensity: 0.15});
+			const poiParkBenchMat = new THREE.MeshStandardMaterial({color: 0x6b4a30, roughness: 0.8});
+			const poiPlaygroundPoleMat = new THREE.MeshStandardMaterial({color: 0xd83c3c, roughness: 0.6});
+			const poiPlaygroundSeatMat = new THREE.MeshStandardMaterial({color: 0xf4c430, roughness: 0.6});
+			const poiPlaygroundSlideMat = new THREE.MeshStandardMaterial({color: 0x2f7dd8, roughness: 0.5});
+			const poiWindmillTowerMat = new THREE.MeshStandardMaterial({color: 0xe8e2d0, roughness: 0.75});
+			const poiWindmillCapMat = new THREE.MeshStandardMaterial({color: 0x3a3630, roughness: 0.6});
+			const poiWindmillBladeMat = new THREE.MeshStandardMaterial({color: 0xc9c0a8, roughness: 0.7});
+
+			// A small glowing beacon floats above every real POI so they read as
+			// distinct from the fully-random procedural scenery at a glance, even
+			// when the underlying model (the generic house) looks the same as one
+			// of the random ones. makeGlowTexture() is defined further down this
+			// file but hoisted, so it's safe to call from here.
+			function makeBeaconMaterial(colorRgb) {
+				const ctx = makeGlowTexture(`rgba(${colorRgb},1)`, `rgba(${colorRgb},0.45)`);
+				const tex = new THREE.CanvasTexture(ctx.canvas);
+				return new THREE.SpriteMaterial({map: tex, transparent: true, depthWrite: false, fog: false});
+			}
+			const poiBeaconMats = {
+				hospital: makeBeaconMaterial('255,80,80'),
+				school: makeBeaconMaterial('90,160,255'),
+				fuel: makeBeaconMaterial('255,205,80'),
+				station: makeBeaconMaterial('190,110,255'),
+				house: makeBeaconMaterial('110,230,140'),
+				church: makeBeaconMaterial('230,230,235'),
+				shop: makeBeaconMaterial('255,140,60'),
+				park: makeBeaconMaterial('120,220,120'),
+				playground: makeBeaconMaterial('255,105,180'),
+				windmill: makeBeaconMaterial('210,190,140'),
+			};
+
+			// Windmill blade hubs collected as they're built (see buildPOIModel below)
+			// so animate() can spin them each frame -- reset whenever POIs are rebuilt
+			// or cleared, same lifecycle as placedPOIEntries.
+			let windmillHubs = [];
+			function addPOIBeacon(group, kind, height) {
+				const beacon = new THREE.Sprite(poiBeaconMats[kind] || poiBeaconMats.house);
+				beacon.scale.set(1.3, 1.3, 1);
+				beacon.position.set(0, height, 0);
+				group.add(beacon);
+			}
+
+			function buildPOIModel(kind) {
+				const group = new THREE.Group();
+				if(kind === 'hospital') {
+					const body = new THREE.Mesh(houseBodyGeom, poiHospitalWallMat);
+					body.scale.set(1.3, 1.2, 1.3);
+					body.position.y = 1.1*1.2;
+					const roof = new THREE.Mesh(houseRoofGeom, houseRoofMat);
+					roof.scale.set(1.3, 1, 1.3);
+					roof.position.y = 2.5*1.2;
+					roof.rotation.y = Math.PI/4;
+					const crossV = new THREE.Mesh(new THREE.BoxGeometry(0.35, 1.1, 0.06), poiHospitalCrossMat);
+					const crossH = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.35, 0.06), poiHospitalCrossMat);
+					crossV.position.set(0, 1.5, 1.58);
+					crossH.position.set(0, 1.5, 1.58);
+					group.add(body, roof, crossV, crossH);
+					addPOIBeacon(group, kind, 4.2);
+				} else if(kind === 'school') {
+					const body = new THREE.Mesh(houseBodyGeom, poiSchoolWallMat);
+					body.scale.set(1.6, 1.3, 1.5);
+					body.position.y = 1.1*1.3;
+					const roof = new THREE.Mesh(houseRoofGeom, poiSchoolRoofMat);
+					roof.scale.set(1.6, 1, 1.5);
+					roof.position.y = 2.5*1.3;
+					roof.rotation.y = Math.PI/4;
+					const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 2.6, 6), lampPoleMat);
+					pole.position.set(1.6, 1.3, 1.6);
+					const flag = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.32), poiFlagMat);
+					flag.position.set(1.85, 2.4, 1.6);
+					group.add(body, roof, pole, flag);
+					addPOIBeacon(group, kind, 4.6);
+				} else if(kind === 'fuel') {
+					const canopy = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.15, 2.2), poiFuelCanopyMat);
+					canopy.position.y = 2.3;
+					group.add(canopy);
+					[[-1.3, -0.9], [1.3, -0.9], [-1.3, 0.9], [1.3, 0.9]].forEach(([x, z]) => {
+						const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 2.3, 6), poiFuelPoleMat);
+						pole.position.set(x, 1.15, z);
+						group.add(pole);
+					});
+					const booth = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.6, 1.0), poiFuelBoothMat);
+					booth.position.set(-1.6, 0.8, -1.6);
+					group.add(booth);
+					addPOIBeacon(group, kind, 3.0);
+				} else if(kind === 'station') {
+					const body = new THREE.Mesh(houseBodyGeom, poiStationWallMat);
+					body.scale.set(2.2, 1.3, 1.6);
+					body.position.y = 1.1*1.3;
+					const roof = new THREE.Mesh(houseRoofGeom, poiStationRoofMat);
+					roof.scale.set(1.7, 0.8, 1.5);
+					roof.position.y = 2.6*1.3;
+					roof.rotation.y = Math.PI/4;
+					const sign = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.4, 0.06), poiStationSignMat);
+					sign.position.set(0, 2.9, 1.65);
+					group.add(body, roof, sign);
+					addPOIBeacon(group, kind, 4.6);
+				} else if(kind === 'church') {
+					const body = new THREE.Mesh(houseBodyGeom, poiChurchWallMat);
+					body.scale.set(1.4, 1.5, 1.8);
+					body.position.y = 1.1*1.5;
+					const roof = new THREE.Mesh(houseRoofGeom, houseRoofMat);
+					roof.scale.set(1.4, 1, 1.8);
+					roof.position.y = 2.5*1.5;
+					roof.rotation.y = Math.PI/4;
+					const steeple = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.6, 2.6, 4), poiChurchSteepleMat);
+					steeple.position.set(0, 2.5*1.5 + 1.3, -1.0);
+					steeple.rotation.y = Math.PI/4;
+					const spire = new THREE.Mesh(new THREE.ConeGeometry(0.75, 1.4, 4), poiChurchSteepleMat);
+					spire.position.set(0, 2.5*1.5 + 2.6 + 0.7, -1.0);
+					spire.rotation.y = Math.PI/4;
+					group.add(body, roof, steeple, spire);
+					addPOIBeacon(group, kind, 6.2);
+				} else if(kind === 'shop') {
+					const body = new THREE.Mesh(houseBodyGeom, poiShopWallMat);
+					body.scale.set(1.5, 1.0, 1.2);
+					body.position.y = 1.1;
+					const roof = new THREE.Mesh(new THREE.BoxGeometry(3.7, 0.15, 3.2), poiShopWallMat);
+					roof.position.y = 2.25;
+					const windowStrip = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.9, 0.06), poiShopWindowMat);
+					windowStrip.position.set(0, 0.9, 1.45);
+					const sign = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.5, 0.1), poiShopSignMat);
+					sign.position.set(0, 2.05, 1.45);
+					group.add(body, roof, windowStrip, sign);
+					addPOIBeacon(group, kind, 3.0);
+				} else if(kind === 'park') {
+					for(let i = 0; i < 3; i++) {
+						const bush = new THREE.Mesh(bushGeom, bushMat);
+						bush.position.set((i - 1)*1.1, 0.35, (i%2)*0.6);
+						bush.scale.set(1.1, 0.8, 1.1);
+						group.add(bush);
+					}
+					const seat = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.08, 0.4), poiParkBenchMat);
+					seat.position.set(0, 0.45, 1.2);
+					const back = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.5, 0.08), poiParkBenchMat);
+					back.position.set(0, 0.7, 1.02);
+					group.add(seat, back);
+					addPOIBeacon(group, kind, 2.4);
+				} else if(kind === 'playground') {
+					const swingPoleGeom = new THREE.CylinderGeometry(0.05, 0.05, 2.0, 6);
+					const poleL = new THREE.Mesh(swingPoleGeom, poiPlaygroundPoleMat);
+					poleL.position.set(-0.8, 1.0, 0);
+					poleL.rotation.z = 0.15;
+					const poleR = new THREE.Mesh(swingPoleGeom, poiPlaygroundPoleMat);
+					poleR.position.set(0.8, 1.0, 0);
+					poleR.rotation.z = -0.15;
+					const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.8, 6), poiPlaygroundPoleMat);
+					bar.rotation.z = Math.PI/2;
+					bar.position.set(0, 1.95, 0);
+					const seat = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.06, 0.3), poiPlaygroundSeatMat);
+					seat.position.set(0, 1.1, 0.15);
+					const slide = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.06, 1.8), poiPlaygroundSlideMat);
+					slide.position.set(1.6, 0.55, 0);
+					slide.rotation.x = -0.5;
+					group.add(poleL, poleR, bar, seat, slide);
+					addPOIBeacon(group, kind, 2.6);
+				} else if(kind === 'windmill') {
+					const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.95, 4.6, 8), poiWindmillTowerMat);
+					tower.position.y = 2.3;
+					const cap = new THREE.Mesh(new THREE.ConeGeometry(0.65, 0.9, 8), poiWindmillCapMat);
+					cap.position.y = 4.6 + 0.45;
+					const hub = new THREE.Group();
+					hub.position.set(0, 4.0, 1.0);
+					const bladeGeom = new THREE.BoxGeometry(0.22, 2.6, 0.06);
+					for(let i = 0; i < 4; i++) {
+						const blade = new THREE.Mesh(bladeGeom, poiWindmillBladeMat);
+						blade.position.y = 1.3;
+						const bladeWrap = new THREE.Group();
+						bladeWrap.rotation.z = (Math.PI/2)*i;
+						bladeWrap.add(blade);
+						hub.add(bladeWrap);
+					}
+					windmillHubs.push(hub);
+					group.add(tower, cap, hub);
+					addPOIBeacon(group, kind, 6.0);
+				} else { // generic house / residential building
+					const wallMat = houseWallMats[Math.floor(Math.random()*houseWallMats.length)];
+					const body = new THREE.Mesh(houseBodyGeom, wallMat);
+					body.position.y = 1.1;
+					const roof = new THREE.Mesh(houseRoofGeom, houseRoofMat);
+					roof.position.y = 2.5;
+					roof.rotation.y = Math.PI/4;
+					const door = new THREE.Mesh(houseDoorGeom, houseDoorMat);
+					door.position.set(0, 0.55, 1.21);
+					const window1 = new THREE.Mesh(houseWindowGeom, houseWindowMat);
+					window1.position.set(-0.75, 1.3, 1.21);
+					const window2 = new THREE.Mesh(houseWindowGeom, houseWindowMat);
+					window2.position.set(0.75, 1.3, 1.21);
+					group.add(body, roof, door, window1, window2);
+					addPOIBeacon(group, kind, 3.4);
+				}
+				return group;
+			}
+
 			const segments = [];
 
 			// Local procedural curve calculations to prevent matrix generation errors
@@ -408,6 +621,94 @@
 			// flat -- real curvature, no fake hills.
 			let routeRibbonGroup = null;
 			let routeCameraPath = null; // { points:[{x,z}], cumDist:[...], totalLen }
+			let routePOIGroup = null;
+			let routeProjectionOrigin = null; // {lat,lng} used to project POI coords into the same local x/z as the ribbon
+			let placedPOIEntries = []; // [{x, z, kind, name}, ...] -- local positions of placed POIs, for the proximity label in animate()
+
+			const POI_KIND_LABELS = {
+				hospital: 'Hospital', school: 'School', fuel: 'Fuel station', station: 'Train station', house: 'House',
+				church: 'Church', shop: 'Shop', park: 'Park', playground: 'Playground', windmill: 'Windmill',
+			};
+
+			// Generic point-to-polyline helper (distance + foot point + side) used to
+			// place real-world POIs against the route ribbon -- distinct from
+			// distanceToPolyline()/safeForScenery() below, which only need a distance.
+			function nearestPointOnPolyline(points, x, z) {
+				let best = null;
+				for(let j = 0; j < points.length - 1; j++) {
+					const a = points[j], b = points[j+1];
+					const abx = b.x - a.x, abz = b.z - a.z;
+					const lenSq = abx*abx + abz*abz || 1;
+					let t = ((x - a.x)*abx + (z - a.z)*abz)/lenSq;
+					t = Math.max(0, Math.min(1, t));
+					const cx = a.x + abx*t, cz = a.z + abz*t;
+					const d = Math.sqrt((x - cx)**2 + (z - cz)**2);
+					if(!best || d < best.distance) {
+						const dirLen = Math.sqrt(abx*abx + abz*abz) || 1;
+						const dirX = abx/dirLen, dirZ = abz/dirLen;
+						const perpX = -dirZ, perpZ = dirX;
+						const side = (x - cx)*perpX + (z - cz)*perpZ; // signed distance along the perpendicular
+						best = {distance: d, footX: cx, footZ: cz, dirX, dirZ, perpX, perpZ, side};
+					}
+				}
+				return best;
+			}
+
+			// Places real OpenStreetMap POIs (hospitals, schools, fuel stations, train
+			// stations, generic houses) fetched by route.js's fetchRoutePOIs() against
+			// the real route ribbon, snapped to the nearest point on the actual path
+			// rather than the fully-random spacing populateScenery() uses.
+			function placeRoutePOIs(pois) {
+				if(routePOIGroup) { scene.remove(routePOIGroup); routePOIGroup = null; }
+				placedPOIEntries = [];
+				windmillHubs = [];
+				if(!routeCameraPath || !routeProjectionOrigin || !pois || !pois.length) return;
+
+				const refLat = routeProjectionOrigin.lat*Math.PI/180;
+				const mPerLat = 110574;
+				const mPerLng = 111320*Math.cos(refLat);
+				const roadClearance = TOTAL_SURFACE_WIDTH/2 + 1.2; // matches populateScenery's own minimum lateral offset
+				const maxDistFromRoad = POI_MATCH_RADIUS_M; // shared with route.js's Overpass corridor query (same global scope, route.js loads first)
+				const maxPois = 400; // corridor-based fetching returns real density now (e.g. 2689 along one 11km corridor), so this needs headroom beyond the old bbox-fetch numbers
+
+				// Generic houses vastly outnumber hospitals/schools/fuel stations/train
+				// stations in OSM data, so filling the cap in fetch order lets houses
+				// crowd out the rarer, more interesting categories entirely. Placing the
+				// non-house kinds first guarantees they show up whenever they exist within
+				// range, with houses only filling whatever room is left.
+				const prioritized = pois.filter(p => p.kind !== 'house').concat(pois.filter(p => p.kind === 'house'));
+
+				let placed = 0, skippedFar = 0, skippedCap = 0;
+
+				const group = new THREE.Group();
+				for(const poi of prioritized) {
+					if(placed >= maxPois) { skippedCap++; continue; }
+					const x = (poi.lng - routeProjectionOrigin.lng)*mPerLng;
+					const z = -(poi.lat - routeProjectionOrigin.lat)*mPerLat;
+
+					const near = nearestPointOnPolyline(routeCameraPath.points, x, z);
+					if(!near || near.distance > maxDistFromRoad) { skippedFar++; continue; }
+					if(near.distance < roadClearance) continue; // right on/near the road -- likely imprecise OSM data
+
+					const side = near.side >= 0 ? 1 : -1;
+					const offset = Math.min(Math.max(near.distance, roadClearance + 1), roadClearance*5);
+					const posX = near.footX + near.perpX*offset*side;
+					const posZ = near.footZ + near.perpZ*offset*side;
+					const wrap = new THREE.Group();
+					wrap.position.set(posX, 0, posZ);
+					wrap.lookAt(posX + near.dirX, 0, posZ + near.dirZ);
+					wrap.add(buildPOIModel(poi.kind));
+					group.add(wrap);
+					placedPOIEntries.push({x: posX, z: posZ, kind: poi.kind, name: poi.name});
+					placed++;
+				}
+
+				routePOIGroup = group;
+				scene.add(routePOIGroup);
+				if(skippedFar || skippedCap) {
+					console.log(`[route POIs] placed ${placed}, skipped ${skippedFar} too far from the route and ${skippedCap} over the ${maxPois} cap`);
+				}
+			}
 
 			function projectRouteToLocal(coords) {
 				const refLat = coords[0].lat*Math.PI/180;
@@ -465,7 +766,10 @@
 
 			function clearRouteRibbon() {
 				if(routeRibbonGroup) { scene.remove(routeRibbonGroup); routeRibbonGroup = null; }
+				if(routePOIGroup) { scene.remove(routePOIGroup); routePOIGroup = null; }
 				routeCameraPath = null;
+				routeProjectionOrigin = null;
+				windmillHubs = [];
 				segments.forEach(s => { s.group.visible = true; });
 				rivalGroup.visible = true;
 				rivalGroup.position.set(-LANE_OFFSET, 0, -70);
@@ -474,6 +778,7 @@
 			function buildRouteRibbon(coordsLatLng) {
 				clearRouteRibbon();
 				if(!coordsLatLng || coordsLatLng.length < 2) return;
+				routeProjectionOrigin = coordsLatLng[0];
 
 				const projectedFull = projectRouteToLocal(coordsLatLng);
 				const controlPoints = downsampleForRibbon(projectedFull, 220);
@@ -626,6 +931,7 @@
 
 			build3DRoute = buildRouteRibbon;
 			clear3DRoute = clearRouteRibbon;
+			place3DPOIs = placeRoutePOIs;
 
 			// ---------- Time-of-day lighting ----------
 			// Sky, fog, and lighting shift smoothly based on the real device clock --
@@ -792,6 +1098,10 @@
 				baseGround.position.x = camera.position.x;
 				baseGround.position.z = camera.position.z;
 
+				// Windmills keep turning even in the route preview (not just while
+				// riding) -- a few objects at most, cheap regardless.
+				windmillHubs.forEach(hub => { hub.rotation.z += dt*1.1; });
+
 				// Each segment scrolls toward the camera every frame. Its "true" position
 				// along the infinite procedural path is (local z) - (total distance travelled),
 				// which stays stable forever since both grow by the same amount each frame --
@@ -839,6 +1149,25 @@
 					camera.position.set(pos.x, BASE_CAM_Y + bobValue, pos.z);
 					camera.rotation.z = 0;
 					camera.lookAt(lookPos.x, BASE_CAM_Y*0.8, lookPos.z);
+
+					// Name the nearest placed real-world POI once you're close enough to
+					// actually be passing it, same "show while relevant" pattern as the
+					// street-name label.
+					if(els.poiNameLabel) {
+						let nearest = null, nearestD = Infinity;
+						for(const p of placedPOIEntries) {
+							const dx = p.x - pos.x, dz = p.z - pos.z;
+							const d = Math.sqrt(dx*dx + dz*dz);
+							if(d < nearestD) { nearestD = d; nearest = p; }
+						}
+						if(nearest && nearestD < 30) {
+							const kindLabel = POI_KIND_LABELS[nearest.kind] || 'Nearby building';
+							els.poiNameLabel.textContent = nearest.name ? `${kindLabel} · ${nearest.name}` : kindLabel;
+							els.poiNameLabel.classList.add('show');
+						} else {
+							els.poiNameLabel.classList.remove('show');
+						}
+					}
 				}
 				else if(!routeCameraPath && visualSpeed > 0.05) {
 					// Straight procedural road: camera just stays centered -- only a
@@ -850,6 +1179,7 @@
 					camera.position.x = 0;
 					camera.rotation.z = 0;
 					camera.lookAt(0, BASE_CAM_Y*0.8, -18);
+					if(els.poiNameLabel) els.poiNameLabel.classList.remove('show');
 				}
 				else if(routeCameraPath && !isRiding){
 				const startPos = pointAtDistance(routeCameraPath, 0);
@@ -857,11 +1187,13 @@
 				camera.position.set(startPos.x, BASE_CAM_Y, startPos.z);
 				camera.rotation.z = 0;
 				camera.lookAt(lookPos.x, BASE_CAM_Y*0.8, lookPos.z);
+				if(els.poiNameLabel) els.poiNameLabel.classList.remove('show');
 			}
 			else if(!routeCameraPath) { // Return smoothly to standard idle positions when wheel stop tracking kicks in
 					camera.position.set(0, BASE_CAM_Y, 8);
 					camera.rotation.z = 0;
 					camera.lookAt(0, BASE_CAM_Y*0.8, -18);
+					if(els.poiNameLabel) els.poiNameLabel.classList.remove('show');
 				}
 				renderer.render(scene, camera);
 			}

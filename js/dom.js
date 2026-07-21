@@ -27,6 +27,8 @@
 			findRouteBtn: document.getElementById('findRouteBtn'),
 			routeStatus: document.getElementById('routeStatus'),
 			streetNameLabel: document.getElementById('streetNameLabel'),
+			poiNameLabel: document.getElementById('poiNameLabel'),
+			resistanceSuggestLabel: document.getElementById('resistanceSuggestLabel'),
 			miniMapWrap: document.getElementById('miniMapWrap'),
 			ride3dCanvas: document.getElementById('ride3dCanvas'),
 			followToggle: document.getElementById('followToggle'),
