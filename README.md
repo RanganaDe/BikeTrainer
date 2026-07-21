@@ -1,4 +1,4 @@
-Simple Bike trainer app for your smart bike with speed sensor
+Simple Bike trainer application for your smart bike with speed sensor
 
 ## What this is
 
