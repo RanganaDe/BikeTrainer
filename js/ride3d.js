@@ -114,6 +114,20 @@
 			container.innerHTML = '';
 			container.appendChild(renderer.domElement);
 
+			// Without tone mapping, MeshStandardMaterial's PBR lighting response renders flat
+			// and washed out -- ACES filmic mapping is the standard fix and costs nothing extra
+			// (the GPU already runs this pass). Color textures need sRGB encoding to match, and
+			// anisotropic filtering keeps the repeating ground/road textures from shimmering at
+			// the grazing viewing angle this camera uses -- both are one-time, near-free costs.
+			renderer.outputEncoding = THREE.sRGBEncoding;
+			renderer.toneMapping = THREE.ACESFilmicToneMapping;
+			renderer.toneMappingExposure = 1.05;
+			const maxAniso = renderer.capabilities.getMaxAnisotropy();
+			[grassTexture, asphaltTexture, gravelTexture, asphaltTextureRibbon, gravelTextureRibbon, skyTexture].forEach(tex => {
+				tex.encoding = THREE.sRGBEncoding;
+				tex.anisotropy = maxAniso;
+			});
+
 			// Well balanced illumination modeling out outdoor directional daylight shading.
 			// Kept as named references (not inline scene.add(...)) so time-of-day can
 			// retune their color/intensity/position live.
@@ -164,11 +178,13 @@
 			baseGround.position.y = -0.15;
 			scene.add(baseGround);
 
-			// Recycled shared base meshes across segments to keep performance near 60 FPS
-			const treeTrunkGeom = new THREE.CylinderGeometry(0.09, 0.16, 1.6, 5);
-			const treeLeavesGeom = new THREE.ConeGeometry(1.1, 2.8, 6);
+			// Recycled shared base meshes across segments to keep performance near 60 FPS --
+			// these are each built ONCE and reused across every tree/bush instance, so a
+			// slightly higher segment count for rounder silhouettes costs nothing per-frame.
+			const treeTrunkGeom = new THREE.CylinderGeometry(0.09, 0.16, 1.6, 7);
+			const treeLeavesGeom = new THREE.ConeGeometry(1.1, 2.8, 8);
 			const rockGeom = new THREE.DodecahedronGeometry(0.6, 0);
-			const bushGeom = new THREE.SphereGeometry(0.7, 5, 4);
+			const bushGeom = new THREE.SphereGeometry(0.7, 8, 6);
 			const fenceRailGeom = new THREE.BoxGeometry(0.06, 0.12, SEG_LEN);
 			const fencePostGeom = new THREE.CylinderGeometry(0.05, 0.05, 1.1, 4);
 
@@ -239,6 +255,7 @@
 			function makeBeaconMaterial(colorRgb) {
 				const ctx = makeGlowTexture(`rgba(${colorRgb},1)`, `rgba(${colorRgb},0.45)`);
 				const tex = new THREE.CanvasTexture(ctx.canvas);
+				tex.encoding = THREE.sRGBEncoding;
 				return new THREE.SpriteMaterial({map: tex, transparent: true, depthWrite: false, fog: false});
 			}
 			const poiBeaconMats = {
@@ -982,6 +999,7 @@
 			}
 			const sunCtx = makeGlowTexture('rgba(255,250,230,1)', 'rgba(255,215,140,0.5)');
 			const sunTexture = new THREE.CanvasTexture(sunCtx.canvas);
+			sunTexture.encoding = THREE.sRGBEncoding;
 			const sunSprite = new THREE.Sprite(new THREE.SpriteMaterial({map: sunTexture, transparent: true, depthTest: false, depthWrite: false, fog: false}));
 			sunSprite.scale.set(46, 46, 1);
 			scene.add(sunSprite);
@@ -992,6 +1010,7 @@
 			moonCtx.beginPath(); moonCtx.arc(50, 46, 9, 0, Math.PI*2); moonCtx.fill();
 			moonCtx.beginPath(); moonCtx.arc(76, 70, 6, 0, Math.PI*2); moonCtx.fill();
 			const moonTexture = new THREE.CanvasTexture(moonCtx.canvas);
+			moonTexture.encoding = THREE.sRGBEncoding;
 			const moonSprite = new THREE.Sprite(new THREE.SpriteMaterial({map: moonTexture, transparent: true, depthTest: false, depthWrite: false, fog: false}));
 			moonSprite.scale.set(32, 32, 1);
 			scene.add(moonSprite);
