@@ -7,6 +7,7 @@
 		let prevWheelRevs = null, prevWheelEventTime = null;
 
 		let isRiding = false;
+		let isPaused = false;
 		let rideStartTs = null;
 		let timerInterval = null;
 		let powerSum = 0, powerCount = 0, powerMax = 0;
@@ -22,7 +23,7 @@
 			els.powerValue.textContent = Math.round(watts);
 			const frac = Math.max(0, Math.min(1, watts/POWER_SCALE_MAX));
 			els.powerRing.style.strokeDashoffset = RING_CIRC*(1 - frac);
-			if(isRiding) {
+			if(isRiding && !isPaused) {
 				powerSum += watts;
 				powerCount++;
 				if(watts > powerMax) powerMax = watts;
@@ -31,7 +32,7 @@
 
 		function updateSpeed(kmh) {
 			const now = performance.now();
-			if(isRiding && lastSpeedTs !== null) {
+			if(isRiding && !isPaused && lastSpeedTs !== null) {
 				const deltaHours = (now - lastSpeedTs)/3600000;
 				distanceKm += kmh*deltaHours;
 				if(routeActive) updateRouteProgress(distanceKm);

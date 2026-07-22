@@ -1087,7 +1087,7 @@
 			function animate() {
 				requestAnimationFrame(animate);
 				const dt = Math.min(clock.getDelta(), 0.1);
-				const speedKmh = isRiding ? (lastSpeed || 0) : 0;
+				const speedKmh = (isRiding && !isPaused) ? (lastSpeed || 0) : 0;
 				const speedMS = (speedKmh*1000)/3600;
 				const visualSpeed = speedMS*VISUAL_SCALE;
 				currentWorldProgress += visualSpeed*dt;
@@ -1132,8 +1132,8 @@
 
 					// Rival cyclist holds a steady pace -- you visibly close the gap
 					// (or fall behind) depending on how hard you're actually pedalling.
-					// Frozen entirely until a ride is active.
-					if(isRiding){
+					// Frozen entirely until a ride is active, and while paused.
+					if(isRiding && !isPaused){
 						rivalGroup.position.z += (visualSpeed - RIVAL_OWN_SPEED)*dt;
 						rivalGroup.children.forEach(c => { if(c.geometry && c.geometry.type === 'TorusGeometry') c.rotation.x += visualSpeed*dt*1.6; });
 						if(rivalGroup.position.z > 15){

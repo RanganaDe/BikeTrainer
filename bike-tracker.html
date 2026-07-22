@@ -236,6 +236,12 @@
 			border-color: var(--danger);
 		}
 
+		button.paused {
+			background: var(--speed);
+			color: #062430;
+			border-color: var(--speed);
+		}
+
 		button.icon {
 			padding: 10px;
 			width: 38px;
@@ -934,6 +940,7 @@
 	<div class="session-bar">
 		<div class="session-bar-actions">
 			<button class="primary" id="rideBtn" disabled>Start ride</button>
+			<button id="pauseBtn" disabled>Pause ride</button>
 			<button id="simulateBtn" title="Fake pedalling data, no sensor needed -- for testing">Simulate ride</button>
 		</div>
 		<div class="timer" id="timerDisplay">00:00</div>

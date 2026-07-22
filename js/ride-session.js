@@ -1,7 +1,16 @@
 		// ---------- ride session ----------
+		let elapsedMsBeforePause = 0; // accumulated active (unpaused) ride time from prior segments
+
+		function tickTimer() {
+			const sec = Math.floor((elapsedMsBeforePause + (Date.now() - rideStartTs))/1000);
+			els.timerDisplay.textContent = fmtDuration(sec);
+		}
+
 		function startRide() {
 			isRiding = true;
+			isPaused = false;
 			rideStartTs = Date.now();
+			elapsedMsBeforePause = 0;
 			powerSum = 0;
 			powerCount = 0;
 			powerMax = 0;
@@ -11,20 +20,54 @@
 			els.rideBtn.textContent = 'Stop ride';
 			els.rideBtn.classList.add('stop');
 			els.rideBtn.classList.remove('primary');
+			els.pauseBtn.disabled = false;
+			els.pauseBtn.textContent = 'Pause ride';
+			els.pauseBtn.classList.remove('paused');
 			els.timerDisplay.classList.add('active');
-			timerInterval = setInterval(() => {
-				const sec = Math.floor((Date.now() - rideStartTs)/1000);
-				els.timerDisplay.textContent = fmtDuration(sec);
-			}, 1000);
+			timerInterval = setInterval(tickTimer, 1000);
 		}
 
-		function stopRide() {
-			isRiding = false;
+		function pauseRide() {
+			if(!isRiding || isPaused) return;
+			isPaused = true;
+			elapsedMsBeforePause += Date.now() - rideStartTs;
 			clearInterval(timerInterval);
-			const duration = Math.floor((Date.now() - rideStartTs)/1000);
+			timerInterval = null;
+			els.pauseBtn.textContent = 'Resume ride';
+			els.pauseBtn.classList.add('paused');
+			els.timerDisplay.classList.remove('active');
+			if(isSimulating && simInterval) { clearInterval(simInterval); simInterval = null; }
+		}
+
+		function resumeRide() {
+			if(!isRiding || !isPaused) return;
+			isPaused = false;
+			rideStartTs = Date.now();
+			lastSpeedTs = performance.now(); // avoid counting the paused stretch as travelled distance
+			timerInterval = setInterval(tickTimer, 1000);
+			els.pauseBtn.textContent = 'Pause ride';
+			els.pauseBtn.classList.remove('paused');
+			els.timerDisplay.classList.add('active');
+			if(isSimulating && !simInterval) simInterval = setInterval(simulateTick, 250);
+		}
+
+		els.pauseBtn.addEventListener('click', () => {
+			if(isPaused) resumeRide(); else pauseRide();
+		});
+
+		function stopRide() {
+			const wasPaused = isPaused;
+			isRiding = false;
+			isPaused = false;
+			if(timerInterval) clearInterval(timerInterval);
+			timerInterval = null;
+			const duration = Math.floor((elapsedMsBeforePause + (wasPaused ? 0 : Date.now() - rideStartTs))/1000);
 			els.rideBtn.textContent = 'Start ride';
 			els.rideBtn.classList.remove('stop');
 			els.rideBtn.classList.add('primary');
+			els.pauseBtn.disabled = true;
+			els.pauseBtn.textContent = 'Pause ride';
+			els.pauseBtn.classList.remove('paused');
 			els.timerDisplay.classList.remove('active');
 
 			if(duration >= 5) {

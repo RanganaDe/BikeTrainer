@@ -37,6 +37,7 @@
 			accountName: document.getElementById('accountName'),
 			authBtn: document.getElementById('authBtn'),
 			rideBtn: document.getElementById('rideBtn'),
+			pauseBtn: document.getElementById('pauseBtn'),
 			simulateBtn: document.getElementById('simulateBtn'),
 			timerDisplay: document.getElementById('timerDisplay'),
 			logList: document.getElementById('logList'),
