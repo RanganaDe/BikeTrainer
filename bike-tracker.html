@@ -531,6 +531,17 @@
 			font-family: 'JetBrains Mono', monospace;
 		}
 
+		.progress-label {
+			top: 114px; /* just below the 96px minimap in the top-right corner */
+			left: auto;
+			right: 10px;
+			max-width: 60%;
+			text-align: right;
+			border-color: rgba(120, 220, 120, 0.35);
+			color: #9be29b;
+			font-family: 'JetBrains Mono', monospace;
+		}
+
 		.minimap-wrap {
 			position: absolute;
 			top: 10px;
@@ -933,6 +944,7 @@
 			<div id="streetNameLabel" class="street-name-label"></div>
 			<div id="poiNameLabel" class="street-name-label poi-name-label"></div>
 			<div id="resistanceSuggestLabel" class="street-name-label resistance-label"></div>
+			<div id="rideProgressLabel" class="street-name-label progress-label"></div>
 			<div id="miniMapWrap" class="minimap-wrap"><div id="miniMap" style="position:absolute; width:170%; height:170%; left:-35%; top:-35%; transform-origin:50% 50%;"></div></div>
 		</div>
 	</div>
@@ -983,6 +995,7 @@
 <script src="js/cloud-sync.js"></script>
 <script src="js/diagnostics.js"></script>
 <script src="js/telemetry.js"></script>
+<script src="js/route-region.js"></script>
 <script src="js/route.js"></script>
 <script src="js/ride3d.js"></script>
 <script src="js/ble.js"></script>

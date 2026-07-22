@@ -29,6 +29,7 @@
 			streetNameLabel: document.getElementById('streetNameLabel'),
 			poiNameLabel: document.getElementById('poiNameLabel'),
 			resistanceSuggestLabel: document.getElementById('resistanceSuggestLabel'),
+			rideProgressLabel: document.getElementById('rideProgressLabel'),
 			miniMapWrap: document.getElementById('miniMapWrap'),
 			ride3dCanvas: document.getElementById('ride3dCanvas'),
 			followToggle: document.getElementById('followToggle'),

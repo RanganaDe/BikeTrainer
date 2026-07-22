@@ -16,6 +16,15 @@
 			const width = container.clientWidth || 300;
 			const height = container.clientHeight || 260;
 
+			// Active geographic region profile (see route-region.js). Drives elevation
+			// exaggeration, biome palette, scenery mix, and distant mountains. Defaults
+			// to generic so procedural (no-route) mode looks exactly as it did before;
+			// route.js swaps it in via the apply3DRegion bridge when a route loads.
+			let region = (typeof REGION_PROFILES !== 'undefined' && REGION_PROFILES.generic) || {
+				name: 'generic', elevationScale: 1, mountains: false, palette: null,
+				scenery: {treeCountMin: 1, treeCountSpan: 3, forestBias: 0, openFieldBias: 0, windmillChance: 0, rockBias: 0}
+			};
+
 			const scene = new THREE.Scene();
 
 			// Gradient sky (drawn to a small canvas, not a flat color) -- pale near
@@ -90,6 +99,10 @@
 			asphaltTextureRibbon.repeat.set(1, 1);
 			const gravelTextureRibbon = gravelTexture.clone();
 			gravelTextureRibbon.repeat.set(1, 1);
+			// Grass clone for the route's elevation-following ground ribbon. Unlike the
+			// road/shoulder clones it DOES tile across its (very wide) width, so its
+			// repeat is set from the ribbon width in buildRouteRibbon rather than 1,1.
+			const grassTextureRibbon = grassTexture.clone();
 
 			// Dynamic exponential fog factor matching performance guidelines
 			const baseFogNear = 35;
@@ -123,7 +136,7 @@
 			renderer.toneMapping = THREE.ACESFilmicToneMapping;
 			renderer.toneMappingExposure = 1.05;
 			const maxAniso = renderer.capabilities.getMaxAnisotropy();
-			[grassTexture, asphaltTexture, gravelTexture, asphaltTextureRibbon, gravelTextureRibbon, skyTexture].forEach(tex => {
+			[grassTexture, asphaltTexture, gravelTexture, asphaltTextureRibbon, gravelTextureRibbon, grassTextureRibbon, skyTexture].forEach(tex => {
 				tex.encoding = THREE.sRGBEncoding;
 				tex.anisotropy = maxAniso;
 			});
@@ -177,6 +190,27 @@
 			baseGround.rotation.x = -Math.PI/2;
 			baseGround.position.y = -0.15;
 			scene.add(baseGround);
+
+			// Distant mountain silhouettes -- only shown for alpine regions (region.mountains).
+			// A fixed ring of low-poly peaks that follows the camera each frame (like
+			// baseGround) so they sit permanently on the horizon: a cheap backdrop, not
+			// per-segment terrain. fog:false keeps them from dissolving into the fog
+			// colour, so they read as a crisp hazy-blue skyline rather than vanishing.
+			const mountainMat = new THREE.MeshStandardMaterial({color: 0x7f8b9a, roughness: 0.95, flatShading: true, fog: false});
+			const mountainSnowMat = new THREE.MeshStandardMaterial({color: 0xdfe6ee, roughness: 0.9, fog: false});
+			const mountainRange = new THREE.Group();
+			[
+				[-160, -240, 70, 60], [120, -260, 85, 72], [-40, -300, 95, 80], [210, -160, 60, 52],
+				[-230, -120, 55, 48], [60, -200, 75, 64], [-110, -180, 50, 44], [170, -300, 80, 68]
+			].forEach(([px, pz, h, r]) => {
+				const cone = new THREE.Mesh(new THREE.ConeGeometry(r, h, 6), mountainMat);
+				cone.position.set(px, h/2 - 6, pz);
+				const snow = new THREE.Mesh(new THREE.ConeGeometry(r*0.4, h*0.32, 6), mountainSnowMat);
+				snow.position.set(px, h - h*0.16 - 6, pz);
+				mountainRange.add(cone, snow);
+			});
+			mountainRange.visible = false;
+			scene.add(mountainRange);
 
 			// Recycled shared base meshes across segments to keep performance near 60 FPS --
 			// these are each built ONCE and reused across every tree/bush instance, so a
@@ -271,15 +305,44 @@
 				windmill: makeBeaconMaterial('210,190,140'),
 			};
 
-			// Windmill blade hubs collected as they're built (see buildPOIModel below)
-			// so animate() can spin them each frame -- reset whenever POIs are rebuilt
-			// or cleared, same lifecycle as placedPOIEntries.
+			// Windmill blade hubs collected as they're built so animate() can spin them
+			// each frame. Two separate lists with different lifecycles: POI windmills
+			// (reset by placeRoutePOIs, same as placedPOIEntries) and scenery windmills
+			// placed by populateScenery for the Netherlands biome (reset by
+			// clearRouteRibbon). Kept apart so re-placing POIs doesn't orphan the
+			// scenery windmills' animation, and vice-versa.
 			let windmillHubs = [];
+			let sceneryWindmillHubs = [];
 			function addPOIBeacon(group, kind, height) {
 				const beacon = new THREE.Sprite(poiBeaconMats[kind] || poiBeaconMats.house);
 				beacon.scale.set(1.3, 1.3, 1);
 				beacon.position.set(0, height, 0);
 				group.add(beacon);
+			}
+
+			// Shared windmill model, used both as a real OSM POI (with a beacon added by
+			// the caller) and as procedural Dutch-biome scenery. Pushes its spinning hub
+			// onto whichever list the caller passes so animate() rotates it.
+			function makeWindmill(hubs) {
+				const group = new THREE.Group();
+				const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.95, 4.6, 8), poiWindmillTowerMat);
+				tower.position.y = 2.3;
+				const cap = new THREE.Mesh(new THREE.ConeGeometry(0.65, 0.9, 8), poiWindmillCapMat);
+				cap.position.y = 4.6 + 0.45;
+				const hub = new THREE.Group();
+				hub.position.set(0, 4.0, 1.0);
+				const bladeGeom = new THREE.BoxGeometry(0.22, 2.6, 0.06);
+				for(let i = 0; i < 4; i++) {
+					const blade = new THREE.Mesh(bladeGeom, poiWindmillBladeMat);
+					blade.position.y = 1.3;
+					const bladeWrap = new THREE.Group();
+					bladeWrap.rotation.z = (Math.PI/2)*i;
+					bladeWrap.add(blade);
+					hub.add(bladeWrap);
+				}
+				(hubs || windmillHubs).push(hub);
+				group.add(tower, cap, hub);
+				return group;
 			}
 
 			function buildPOIModel(kind) {
@@ -397,23 +460,7 @@
 					group.add(poleL, poleR, bar, seat, slide);
 					addPOIBeacon(group, kind, 2.6);
 				} else if(kind === 'windmill') {
-					const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.95, 4.6, 8), poiWindmillTowerMat);
-					tower.position.y = 2.3;
-					const cap = new THREE.Mesh(new THREE.ConeGeometry(0.65, 0.9, 8), poiWindmillCapMat);
-					cap.position.y = 4.6 + 0.45;
-					const hub = new THREE.Group();
-					hub.position.set(0, 4.0, 1.0);
-					const bladeGeom = new THREE.BoxGeometry(0.22, 2.6, 0.06);
-					for(let i = 0; i < 4; i++) {
-						const blade = new THREE.Mesh(bladeGeom, poiWindmillBladeMat);
-						blade.position.y = 1.3;
-						const bladeWrap = new THREE.Group();
-						bladeWrap.rotation.z = (Math.PI/2)*i;
-						bladeWrap.add(blade);
-						hub.add(bladeWrap);
-					}
-					windmillHubs.push(hub);
-					group.add(tower, cap, hub);
+					group.add(makeWindmill(windmillHubs));
 					addPOIBeacon(group, kind, 6.0);
 				} else { // generic house / residential building
 					const wallMat = houseWallMats[Math.floor(Math.random()*houseWallMats.length)];
@@ -506,15 +553,21 @@
 				const seed = Math.abs(Math.sin(worldZ));
 				const leftSideActive = (seed*10)%2 > 0.7;
 				const rightSideActive = (seed*100)%2 > 0.7;
+				const sc = region.scenery; // per-region density/mix knobs (see route-region.js)
 
 				[-1, 1].forEach(side => {
-					const sideActive = side === -1 ? leftSideActive : rightSideActive;
+					let sideActive = side === -1 ? leftSideActive : rightSideActive;
 					const sideSeed = side === -1 ? seed : (seed*5)%1;
 					const lateralOffset = side*(TOTAL_SURFACE_WIDTH/2 + 1.2);
 
+					// Region bias: alpine forces more forest, polders force more open field.
+					// Both zero for the generic profile, so its activation is untouched.
+					if(sc.forestBias && sideSeed < sc.forestBias) sideActive = true;
+					if(sc.openFieldBias && sideSeed < sc.openFieldBias) sideActive = false;
+
 					if(sideActive) {
 						// Forest Generation Logic
-						const treeCount = 1 + Math.floor(sideSeed*3);
+						const treeCount = sc.treeCountMin + Math.floor(sideSeed*sc.treeCountSpan);
 						for(let t = 0; t < treeCount; t++) {
 							const tree = new THREE.Group();
 							const trunk = new THREE.Mesh(treeTrunkGeom, trunkMat);
@@ -538,8 +591,22 @@
 						}
 					} else {
 						// Alternative element populating configuration (Rocks, Fences, Grass, Bushes, Lamp posts, Signs, Water, Sheep, Houses)
-						const variantType = Math.floor(sideSeed*9);
 						const localZPoint = -SEG_LEN/2 + (sideSeed*SEG_LEN);
+
+						// Netherlands biome: a windmill sometimes stands in the open field
+						// instead of the usual roadside filler. Its spinning hub goes on the
+						// scenery list so animate() turns it (POI windmills use their own list).
+						if(sc.windmillChance && ((sideSeed*13)%1) < sc.windmillChance) {
+							const wm = makeWindmill(sceneryWindmillHubs);
+							wm.position.set(lateralOffset + side*3.0, 0, localZPoint);
+							wm.scale.set(0.9, 0.9, 0.9);
+							group.add(wm);
+							return; // this side is done
+						}
+
+						// Alpine biome: bias the roadside filler toward rocky outcrops.
+						let variantType = Math.floor(sideSeed*9);
+						if(sc.rockBias && ((sideSeed*3)%1) < sc.rockBias) variantType = 0;
 
 						if(variantType === 0) { // Rock Group
 							const rock = new THREE.Mesh(rockGeom, rockMat);
@@ -647,6 +714,8 @@
 			let routePOIGroup = null;
 			let routeProjectionOrigin = null; // {lat,lng} used to project POI coords into the same local x/z as the ribbon
 			let placedPOIEntries = []; // [{x, z, kind, name}, ...] -- local positions of placed POIs, for the proximity label in animate()
+			let routeTerrainGroup = null; // real surrounding-terrain heightfield (DEM corridor), when loaded
+			let routeGroundMesh = null;   // the flat ground strip built with the ribbon -- hidden once real terrain replaces it
 
 			const POI_KIND_LABELS = {
 				hospital: 'Hospital', school: 'School', fuel: 'Fuel station', station: 'Train station', house: 'House',
@@ -671,7 +740,7 @@
 						const dirX = abx/dirLen, dirZ = abz/dirLen;
 						const perpX = -dirZ, perpZ = dirX;
 						const side = (x - cx)*perpX + (z - cz)*perpZ; // signed distance along the perpendicular
-						best = {distance: d, footX: cx, footZ: cz, dirX, dirZ, perpX, perpZ, side};
+						best = {distance: d, footX: cx, footZ: cz, dirX, dirZ, perpX, perpZ, side, segIndex: j, segT: t};
 					}
 				}
 				return best;
@@ -717,9 +786,13 @@
 					const offset = Math.min(Math.max(near.distance, roadClearance + 1), roadClearance*5);
 					const posX = near.footX + near.perpX*offset*side;
 					const posZ = near.footZ + near.perpZ*offset*side;
+					// Sit the POI on the ribbon's height at its foot point, so it rests on
+					// the sloped ground rather than floating at y=0 on an elevated route.
+					const heights = routeCameraPath.heights;
+					const footY = heights ? heights[near.segIndex] + (heights[near.segIndex + 1] - heights[near.segIndex])*near.segT : 0;
 					const wrap = new THREE.Group();
-					wrap.position.set(posX, 0, posZ);
-					wrap.lookAt(posX + near.dirX, 0, posZ + near.dirZ);
+					wrap.position.set(posX, footY, posZ);
+					wrap.lookAt(posX + near.dirX, footY, posZ + near.dirZ);
 					wrap.add(buildPOIModel(poi.kind));
 					group.add(wrap);
 					placedPOIEntries.push({x: posX, z: posZ, kind: poi.kind, name: poi.name});
@@ -761,7 +834,7 @@
 				return { x: -dz/len, z: dx/len };
 			}
 
-			function buildRibbonGeometry(points, width, cumDist, tileLength) {
+			function buildRibbonGeometry(points, width, cumDist, tileLength, heights) {
 				const positions = [];
 				const uvs = [];
 				const halfW = width/2;
@@ -769,9 +842,10 @@
 					const p = points[i];
 					const pr = perpAt(points, i);
 					const v = (cumDist ? cumDist[i] : i)/(tileLength || 4);
-					positions.push(p.x - pr.x*halfW, 0, p.z - pr.z*halfW);
+					const y = heights ? heights[i] : 0;
+					positions.push(p.x - pr.x*halfW, y, p.z - pr.z*halfW);
 					uvs.push(0, v);
-					positions.push(p.x + pr.x*halfW, 0, p.z + pr.z*halfW);
+					positions.push(p.x + pr.x*halfW, y, p.z + pr.z*halfW);
 					uvs.push(1, v);
 				}
 				const indices = [];
@@ -787,15 +861,57 @@
 				return geom;
 			}
 
+			function disposeGroup(group) {
+				group.traverse(o => { if(o.geometry) o.geometry.dispose(); });
+			}
+
 			function clearRouteRibbon() {
-				if(routeRibbonGroup) { scene.remove(routeRibbonGroup); routeRibbonGroup = null; }
+				if(routeRibbonGroup) { scene.remove(routeRibbonGroup); disposeGroup(routeRibbonGroup); routeRibbonGroup = null; }
 				if(routePOIGroup) { scene.remove(routePOIGroup); routePOIGroup = null; }
+				if(routeTerrainGroup) { scene.remove(routeTerrainGroup); disposeGroup(routeTerrainGroup); routeTerrainGroup = null; }
+				routeGroundMesh = null;
 				routeCameraPath = null;
 				routeProjectionOrigin = null;
 				windmillHubs = [];
+				sceneryWindmillHubs = [];
 				segments.forEach(s => { s.group.visible = true; });
 				rivalGroup.visible = true;
 				rivalGroup.position.set(-LANE_OFFSET, 0, -70);
+			}
+
+			// Real elevation at a cumulative distance along the route (metres), from the
+			// fetched Open-Elevation profile (routeElevationKm/M globals, set by route.js).
+			// Zeroed to the route's start so the ribbon begins near y=0, then scaled by the
+			// region's exaggeration factor. Local x/z are already true metres, so elevation
+			// maps 1:1 to scene units before that multiplier. Returns 0 until the profile
+			// arrives (route builds flat first, then rebuilds elevated -- see route.js).
+			function elevationAtDistanceM(distM) {
+				if(!routeElevationKm || routeElevationKm.length < 2) return 0;
+				const km = distM/1000;
+				let i = 0;
+				while(i < routeElevationKm.length - 2 && routeElevationKm[i+1] < km) i++;
+				const kmA = routeElevationKm[i], kmB = routeElevationKm[i+1];
+				const span = kmB - kmA;
+				const t = span > 0 ? Math.max(0, Math.min(1, (km - kmA)/span)) : 0;
+				const e = routeElevationM[i] + (routeElevationM[i+1] - routeElevationM[i])*t;
+				return (e - routeElevationM[0])*(region.elevationScale || 1);
+			}
+
+			// Box moving-average over the per-point heights (window = 2*radius+1),
+			// clamped at the ends. Tames Open-Elevation's sample-to-sample noise so the
+			// road/ground read as smooth rolling terrain rather than a jagged sawtooth.
+			function smoothHeights(hs, radius) {
+				if(!radius || hs.length < 2*radius + 1) return hs;
+				const out = new Array(hs.length);
+				for(let i = 0; i < hs.length; i++) {
+					let sum = 0, n = 0;
+					for(let j = -radius; j <= radius; j++) {
+						const k = i + j;
+						if(k >= 0 && k < hs.length) { sum += hs[k]; n++; }
+					}
+					out[i] = sum/n;
+				}
+				return out;
 			}
 
 			function buildRouteRibbon(coordsLatLng) {
@@ -830,15 +946,40 @@
 				const totalLen = cumDist[cumDist.length - 1];
 				if(totalLen < 1) return;
 
+				// Real elevation lifted onto each ribbon point (0 everywhere until the
+				// profile lands), then lightly smoothed with a moving average -- the raw
+				// Open-Elevation samples are ~150m apart and noisy (several metres of
+				// jitter between neighbours), which otherwise makes the road visibly bumpy
+				// and, worse, dip below the ground on tiny false descents. Stored on
+				// pathObj so the camera, POIs and scenery all read the same heights.
+				const rawHeights = cumDist.map(d => elevationAtDistanceM(d));
+				const heights = smoothHeights(rawHeights, 4);
+
 				routeRibbonGroup = new THREE.Group();
-				const pathObj = { points, cumDist, totalLen };
+				const pathObj = { points, cumDist, totalLen, heights };
 
 				const ribbonRoadMat = new THREE.MeshStandardMaterial({color: roadMat.color, map: asphaltTextureRibbon, roughness: 0.8, metalness: 0.05, side: THREE.DoubleSide});
 				const ribbonShoulderMat = new THREE.MeshStandardMaterial({color: shoulderMat.color, map: gravelTextureRibbon, roughness: 0.9, side: THREE.DoubleSide});
 
-				const roadMesh = new THREE.Mesh(buildRibbonGeometry(points, ROAD_WIDTH, cumDist, 4), ribbonRoadMat);
+				// A wide ground surface that FOLLOWS the route's elevation, so the terrain
+				// slopes with the road instead of the flat baseGround plane (which, sitting
+				// at the camera's height, would occlude any stretch of road that descends
+				// below it -- the "road not drawn fully" bug). baseGround is hidden while a
+				// route is active (see animate + clearRouteRibbon); this ribbon and the
+				// fog cover the surroundings. Extra-wide so it fills the frustum on curves;
+				// green-on-green self-overlap on tight bends is invisible.
+				const GROUND_RIBBON_WIDTH = 200;
+				grassTextureRibbon.repeat.set(GROUND_RIBBON_WIDTH/6, 1); // tile grass ~every 6m across the width (v tiling comes from tileLength below)
+				const ribbonGroundMat = new THREE.MeshStandardMaterial({color: groundMat.color, map: grassTextureRibbon, roughness: 0.95, metalness: 0, side: THREE.DoubleSide});
+				const groundMesh = new THREE.Mesh(buildRibbonGeometry(points, GROUND_RIBBON_WIDTH, cumDist, 6, heights), ribbonGroundMat);
+				groundMesh.position.y = -0.05; // just below the shoulders
+				routeRibbonGroup.add(groundMesh);
+				routeGroundMesh = groundMesh; // hidden by apply3DTerrain once real DEM terrain replaces the flat strip
+				if(routeTerrainGroup) routeGroundMesh.visible = false; // terrain already loaded (this is an elevation rebuild)
+
+				const roadMesh = new THREE.Mesh(buildRibbonGeometry(points, ROAD_WIDTH, cumDist, 4, heights), ribbonRoadMat);
 				routeRibbonGroup.add(roadMesh);
-				const shoulderMeshL = new THREE.Mesh(buildRibbonGeometry(points, ROAD_WIDTH + SHOULDER_WIDTH*2, cumDist, 4), ribbonShoulderMat);
+				const shoulderMeshL = new THREE.Mesh(buildRibbonGeometry(points, ROAD_WIDTH + SHOULDER_WIDTH*2, cumDist, 4, heights), ribbonShoulderMat);
 				shoulderMeshL.position.y = -0.01;
 				routeRibbonGroup.add(shoulderMeshL);
 
@@ -901,10 +1042,11 @@
 					const len = Math.sqrt(dx*dx + dz*dz) || 1;
 					const px = -dz/len, pz = dx/len;
 					const halfW = 0.09;
-					const a = [p0.x - px*halfW, 0.006, p0.z - pz*halfW];
-					const b = [p0.x + px*halfW, 0.006, p0.z + pz*halfW];
-					const c = [p1.x - px*halfW, 0.006, p1.z - pz*halfW];
-					const dd = [p1.x + px*halfW, 0.006, p1.z + pz*halfW];
+					const y0 = (p0.y || 0) + 0.006, y1 = (p1.y || 0) + 0.006;
+					const a = [p0.x - px*halfW, y0, p0.z - pz*halfW];
+					const b = [p0.x + px*halfW, y0, p0.z + pz*halfW];
+					const c = [p1.x - px*halfW, y1, p1.z - pz*halfW];
+					const dd = [p1.x + px*halfW, y1, p1.z + pz*halfW];
 					dashPositions.push(...a, ...b, ...c, ...dd);
 					const i0 = dashVertCount;
 					dashIndices.push(i0, i0+1, i0+2,  i0+1, i0+3, i0+2);
@@ -928,8 +1070,8 @@
 					const {p, dx, dz} = directionAt(d);
 					if(!safeForScenery(p, dx, dz)) continue;
 					const sceneryWrap = new THREE.Group();
-					sceneryWrap.position.set(p.x, 0, p.z);
-					sceneryWrap.lookAt(p.x + dx, 0, p.z + dz);
+					sceneryWrap.position.set(p.x, p.y || 0, p.z);
+					sceneryWrap.lookAt(p.x + dx, p.y || 0, p.z + dz);
 					routeRibbonGroup.add(sceneryWrap);
 					populateScenery(sceneryWrap, d);
 				}
@@ -949,12 +1091,169 @@
 				const segStart = path.cumDist[i], segEnd = path.cumDist[i+1] !== undefined ? path.cumDist[i+1] : segStart;
 				const t = segEnd > segStart ? (clamped - segStart)/(segEnd - segStart) : 0;
 				const a = path.points[i], b = path.points[i+1] || a;
-				return { x: a.x + (b.x - a.x)*t, z: a.z + (b.z - a.z)*t };
+				const ay = path.heights ? path.heights[i] : 0;
+				const by = path.heights ? (path.heights[i+1] !== undefined ? path.heights[i+1] : ay) : 0;
+				return { x: a.x + (b.x - a.x)*t, y: ay + (by - ay)*t, z: a.z + (b.z - a.z)*t };
 			}
 
 			build3DRoute = buildRouteRibbon;
 			clear3DRoute = clearRouteRibbon;
 			place3DPOIs = placeRoutePOIs;
+			// Hand a detected region profile to the scene: retune materials/sky/fog and
+			// toggle distant mountains. Null restores the generic look (route cleared).
+			apply3DRegion = function(r) {
+				region = r || ((typeof REGION_PROFILES !== 'undefined' && REGION_PROFILES.generic) || region);
+				applyRegionVisuals();
+			};
+
+			// Retunes the existing named materials in place (no rebuild) to the region's
+			// biome palette, and toggles the mountain backdrop. Sky/sun stay owned by the
+			// time-of-day system below, which layers on top -- region only sets the
+			// ground/rock/foliage tints that time-of-day never touches, so night still works.
+			function applyRegionVisuals() {
+				const pal = region && region.palette;
+				if(pal) {
+					if(pal.grass != null) groundMat.color.setHex(pal.grass);
+					if(pal.rock != null) rockMat.color.setHex(pal.rock);
+					if(pal.leaves) pal.leaves.forEach((c, i) => { if(leavesMaterials[i]) leavesMaterials[i].color.setHex(c); });
+				}
+				// Real DEM terrain, when present, supersedes the pinned backdrop entirely.
+				mountainRange.visible = !routeTerrainGroup && !!(region && region.mountains);
+			}
+
+			// Builds a real surrounding-terrain heightfield from a sampled DEM corridor
+			// (route.js fetchRouteTerrain: <=30 coarse stations x `cols` perpendicular
+			// samples reaching `halfWidthM` each side).
+			//
+			// The mesh is built by walking the ACTUAL road path at fine resolution (a row
+			// every ~STEP metres) rather than at the coarse DEM stations. Each row's centre
+			// takes the real road height there (from routeCameraPath, the same profile the
+			// ribbon/camera use), so the terrain centre tracks the road exactly and can't
+			// weave above/below it between stations (the "road sinks / layer on top" bug).
+			// The DEM only shapes the SIDES: at each row we interpolate the coarse stations'
+			// column elevations, carve a flat valley bench across the road bed, then ramp out
+			// to the real mountainside. Colour is by height ABOVE the valley floor (not
+			// absolute altitude), so the roadside reads green even in a 1600m Alpine valley,
+			// with rock/snow only on the rising walls. Flat-shaded for a rugged low-poly read.
+			function buildTerrainMesh(grid) {
+				const { stations, cols, elev } = grid;
+				const halfWidthM = grid.halfWidthM || 350;
+				const base = routeElevationM.length ? routeElevationM[0] : elev[Math.floor(cols/2)];
+				const scale = region.elevationScale || 1;
+				const path = routeCameraPath;
+
+				// The palette grass is a muted grey-green tuned for the textured ground strip;
+				// on the flat-shaded, untextured terrain it reads as olive ("not green"), so
+				// pull it toward a vivid meadow green for the valley floor.
+				const grass = new THREE.Color(region.palette ? region.palette.grass : 0x9fb89a).lerp(new THREE.Color(0x5f9e3a), 0.6);
+				const rock  = new THREE.Color(region.palette ? region.palette.rock  : 0x82888f);
+				const snow  = new THREE.Color(0xeef2f7);
+				const smooth = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a)/(b - a))); return t*t*(3 - 2*t); };
+				const tmp = new THREE.Color();
+
+				const colOffset = c => -halfWidthM + 2*halfWidthM*(c/(cols - 1)); // lateral metres of DEM column c
+				// Real DEM elevation at along-fraction f in [0,1], column c -- interpolated
+				// between the two bracketing coarse stations.
+				function demElevAt(f, c) {
+					const sf = f*(stations - 1);
+					const s0 = Math.max(0, Math.min(stations - 1, Math.floor(sf)));
+					const s1 = Math.min(stations - 1, s0 + 1);
+					const t = sf - s0;
+					return elev[s0*cols + c]*(1 - t) + elev[s1*cols + c]*t;
+				}
+
+				const ROAD_BED_M = 30, RAMP_TO_M = 200; // flat bench across the road, full DEM by ~200m out
+				const totalLen = path ? path.totalLen : 0;
+				const STEP = Math.max(12, totalLen/800);           // fine rows that follow the road; capped to ~800 rows
+				const rows = path ? Math.max(2, Math.floor(totalLen/STEP) + 1) : 0;
+
+				// Downsampled route polyline for a cheap point-to-route distance test.
+				// Where the corridor folds over itself on a hairpin, a far-side sample can
+				// land back near the road on the OTHER limb; carving by true distance to the
+				// route (rather than column offset) pulls those folded vertices down to road
+				// level, so terrain never rises over the road -- which was letting the camera
+				// end up under the (double-sided) terrain and see its green underside as sky.
+				const rpts = path ? path.points : [];
+				const stride = Math.max(1, Math.floor(rpts.length/200));
+				const poly = [];
+				for(let k = 0; k < rpts.length; k += stride) poly.push(rpts[k]);
+				if(rpts.length) poly.push(rpts[rpts.length - 1]);
+				function distToRoute(x, z) {
+					let best = Infinity;
+					for(let j = 0; j < poly.length - 1; j++) {
+						const a = poly[j], b = poly[j + 1];
+						const abx = b.x - a.x, abz = b.z - a.z;
+						const l2 = abx*abx + abz*abz || 1;
+						let t = ((x - a.x)*abx + (z - a.z)*abz)/l2; t = Math.max(0, Math.min(1, t));
+						const cx = a.x + abx*t, cz = a.z + abz*t;
+						const dd = (x - cx)**2 + (z - cz)**2;
+						if(dd < best) best = dd;
+					}
+					return Math.sqrt(best);
+				}
+
+				const positions = [], colors = [];
+				for(let r = 0; r < rows; r++) {
+					const d = Math.min(r*STEP, totalLen);
+					const f = totalLen > 0 ? d/totalLen : 0;
+					const p0 = pointAtDistance(path, d);
+					const p1 = pointAtDistance(path, Math.min(d + 2, totalLen));
+					let dx = p1.x - p0.x, dz = p1.z - p0.z;
+					const len = Math.sqrt(dx*dx + dz*dz) || 1;
+					const perpX = -dz/len, perpZ = dx/len;
+					const roadH = p0.y || 0;                        // ACTUAL road height at this row
+					for(let c = 0; c < cols; c++) {
+						const off = colOffset(c);
+						const vx = p0.x + perpX*off, vz = p0.z + perpZ*off;
+						const demH = (demElevAt(f, c) - base)*scale;
+						const w = smooth(ROAD_BED_M, RAMP_TO_M, distToRoute(vx, vz)); // true distance -> fold-safe
+						const y = roadH*(1 - w) + demH*w;
+						positions.push(vx, y, vz);
+
+						const relM = (y - roadH)/scale;               // metres this vertex rises above the valley floor
+						const rockW = smooth(20, 180, relM);          // green floor -> rock as the wall climbs
+						const snowW = Math.min(smooth(150, 600, relM), smooth(2200, 2900, y/scale + base)); // snow only high AND well above floor
+						tmp.copy(grass).lerp(rock, rockW).lerp(snow, snowW);
+						colors.push(tmp.r, tmp.g, tmp.b);
+					}
+				}
+				const indices = [];
+				for(let r = 0; r < rows - 1; r++) {
+					for(let c = 0; c < cols - 1; c++) {
+						const a = r*cols + c, b = a + 1, cc = a + cols, d = cc + 1;
+						indices.push(a, cc, b,  b, cc, d);
+					}
+				}
+				const geom = new THREE.BufferGeometry();
+				geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+				geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+				geom.setIndex(indices);
+				geom.computeVertexNormals();
+
+				// flatShading derives face normals in-shader, so triangle winding can't
+				// wrongly darken the terrain; DoubleSide covers any back-facing quads.
+				const mat = new THREE.MeshStandardMaterial({vertexColors: true, roughness: 0.95, metalness: 0, flatShading: true, side: THREE.DoubleSide});
+				const mesh = new THREE.Mesh(geom, mat);
+				// Small drop so the road/shoulders stay just proud of the terrain centre
+				// (which now follows the road closely, so little clearance is needed).
+				mesh.position.y = -0.4;
+				const group = new THREE.Group();
+				group.add(mesh);
+				return group;
+			}
+
+			// Hand a sampled DEM corridor to the scene (null removes it). When real terrain
+			// is present the flat ground strip and the pinned backdrop are both hidden.
+			apply3DTerrain = function(grid) {
+				if(routeTerrainGroup) { scene.remove(routeTerrainGroup); disposeGroup(routeTerrainGroup); routeTerrainGroup = null; }
+				const present = !!(grid && grid.stations && grid.cols && routeProjectionOrigin);
+				if(present) {
+					routeTerrainGroup = buildTerrainMesh(grid);
+					scene.add(routeTerrainGroup);
+				}
+				if(routeGroundMesh) routeGroundMesh.visible = !present;
+				mountainRange.visible = present ? false : !!(region && region.mountains);
+			};
 
 			// ---------- Time-of-day lighting ----------
 			// Sky, fog, and lighting shift smoothly based on the real device clock --
@@ -1113,19 +1412,43 @@
 				// Adjust environment atmosphere instantly to project extreme speed levels
 				const speedRatio = Math.min(speedKmh/50, 1.5); // Normalized scalar up to 75kmh
 				currentFog.near = baseFogNear - (speedRatio*12);
-				currentFog.far = baseFogFar - (speedRatio*45);
+				// With real surrounding terrain, push the far plane out so the valley
+				// walls (hundreds of metres off) are actually visible rather than fogged
+				// away -- their far edge still sits past this, so it stays hidden. The
+				// tighter procedural-mode fog (the "speed tunnel" feel) is untouched.
+				const fogFarBase = routeTerrainGroup ? 320 : baseFogFar;
+				currentFog.far = fogFarBase - (speedRatio*45);
 				camera.fov = BASE_FOV + (speedRatio*16); // Dynamic FOV zoom out
 				camera.updateProjectionMatrix();
 
 				// A real route travels true meters, easily hundreds+ from the origin,
 				// so the ground plane must follow the camera rather than sit fixed --
 				// otherwise you'd ride straight off the edge of it within a minute.
-				baseGround.position.x = camera.position.x;
-				baseGround.position.z = camera.position.z;
+				// Its height tracks the ground under the camera (camera.y minus the
+				// eye-height offset) so it stays beneath an elevated route instead of
+				// poking through or floating.
+				// In route mode the elevation-following ground ribbon is the terrain, so
+				// the flat plane is hidden -- keeping it would occlude any descending road
+				// that dips below it. In procedural mode it's the ground, tracking the
+				// camera in x/z (and y for the tiny pedalling bob).
+				baseGround.visible = !routeCameraPath;
+				if(baseGround.visible) {
+					baseGround.position.x = camera.position.x;
+					baseGround.position.z = camera.position.z;
+					baseGround.position.y = camera.position.y - BASE_CAM_Y - 0.15;
+				}
+
+				// Distant mountain backdrop (alpine regions only) rides with the camera
+				// so it stays on the horizon -- a cheap silhouette, not real terrain.
+				if(mountainRange.visible) {
+					mountainRange.position.set(camera.position.x, camera.position.y - BASE_CAM_Y, camera.position.z);
+				}
 
 				// Windmills keep turning even in the route preview (not just while
-				// riding) -- a few objects at most, cheap regardless.
+				// riding) -- a few objects at most, cheap regardless. Both the real-POI
+				// windmills and the Dutch-biome scenery windmills spin.
 				windmillHubs.forEach(hub => { hub.rotation.z += dt*1.1; });
+				sceneryWindmillHubs.forEach(hub => { hub.rotation.z += dt*1.1; });
 
 				// Each segment scrolls toward the camera every frame. Its "true" position
 				// along the infinite procedural path is (local z) - (total distance travelled),
@@ -1181,9 +1504,9 @@
 					const lookPos = pointAtDistance(routeCameraPath, distM + 12);
 					ride3dBobPhase += dt*(3.5 + visualSpeed*0.8);
 					const bobValue = Math.sin(ride3dBobPhase)*(0.022 + speedRatio*0.01);
-					camera.position.set(pos.x, BASE_CAM_Y + bobValue, pos.z);
+					camera.position.set(pos.x, (pos.y || 0) + BASE_CAM_Y + bobValue, pos.z);
 					camera.rotation.z = 0;
-					camera.lookAt(lookPos.x, BASE_CAM_Y*0.8, lookPos.z);
+					camera.lookAt(lookPos.x, (lookPos.y || 0) + BASE_CAM_Y*0.8, lookPos.z);
 
 					// Name the nearest placed real-world POI once you're close enough to
 					// actually be passing it, same "show while relevant" pattern as the
@@ -1220,9 +1543,9 @@
 				smoothRouteDistM = 0;
 				const startPos = pointAtDistance(routeCameraPath, 0);
 				const lookPos = pointAtDistance(routeCameraPath, 12);
-				camera.position.set(startPos.x, BASE_CAM_Y, startPos.z);
+				camera.position.set(startPos.x, (startPos.y || 0) + BASE_CAM_Y, startPos.z);
 				camera.rotation.z = 0;
-				camera.lookAt(lookPos.x, BASE_CAM_Y*0.8, lookPos.z);
+				camera.lookAt(lookPos.x, (lookPos.y || 0) + BASE_CAM_Y*0.8, lookPos.z);
 				if(els.poiNameLabel) els.poiNameLabel.classList.remove('show');
 			}
 			else if(!routeCameraPath) { // Return smoothly to standard idle positions when wheel stop tracking kicks in

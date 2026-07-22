@@ -16,6 +16,11 @@
 		let build3DRoute = null;
 		let clear3DRoute = null;
 		let place3DPOIs = null;
+		let apply3DRegion = null; // hands a detected region profile to the 3D scene
+		let apply3DTerrain = null; // hands a sampled DEM corridor to the 3D scene
+
+		let region = null; // detected geographic region profile for the active route (see route-region.js)
+		let routeTerrain = null; // sampled surrounding-terrain heightfield for the active route (see fetchRouteTerrain)
 
 		function haversineKm(a, b) {
 			const R = 6371;
@@ -87,8 +92,22 @@
 
 		function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
+		// The default overpass-api.de instance is chronically overloaded and 504s on
+		// anything non-trivial, so try a list of mirrors in turn -- osm.ch answers this
+		// query in well under a second. All three send `Access-Control-Allow-Origin: *`,
+		// so they work from the browser.
+		const OVERPASS_ENDPOINTS = [
+			'https://overpass.osm.ch/api/interpreter',
+			'https://overpass-api.de/api/interpreter',
+			'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+		];
+
 		async function fetchPOIRequest(bboxStr) {
-			const query = `[out:json][timeout:30];(
+			// The old query pulled every `building=yes` in the whole route bbox -- tens of
+			// thousands of generic footprints -- which is exactly what timed Overpass out.
+			// Requesting only explicitly-typed residential buildings keeps the real houses
+			// while dropping that catch-all, turning a 504 into a sub-second response.
+			const query = `[out:json][timeout:25];(
 				node["amenity"~"^(hospital|school|fuel|place_of_worship)$"](${bboxStr});
 				way["amenity"~"^(hospital|school|fuel|place_of_worship)$"](${bboxStr});
 				node["railway"="station"](${bboxStr});
@@ -99,21 +118,27 @@
 				way["leisure"~"^(park|playground)$"](${bboxStr});
 				node["man_made"="windmill"](${bboxStr});
 				way["man_made"="windmill"](${bboxStr});
-				way["building"]["building"~"^(house|residential|detached|semidetached_house|terrace|yes|apartments)$"](${bboxStr});
-			);out center 4000;`;
+				way["building"~"^(house|residential|detached|semidetached_house|terrace)$"](${bboxStr});
+			);out center 3000;`;
 
-			const res = await fetch('https://overpass-api.de/api/interpreter', {
-				method: 'POST',
-				body: 'data=' + encodeURIComponent(query)
-			});
-			if(!res.ok) {
-				const err = new Error(`Overpass request failed (${res.status})`);
-				const retryAfter = Number(res.headers.get('Retry-After'));
-				if(!Number.isNaN(retryAfter)) err.retryAfterMs = retryAfter*1000;
-				throw err;
+			let lastErr;
+			for(const endpoint of OVERPASS_ENDPOINTS) {
+				try {
+					const res = await fetch(endpoint, {method: 'POST', body: 'data=' + encodeURIComponent(query)});
+					if(!res.ok) {
+						const err = new Error(`Overpass request failed (${res.status})`);
+						const retryAfter = Number(res.headers.get('Retry-After'));
+						if(!Number.isNaN(retryAfter)) err.retryAfterMs = retryAfter*1000;
+						throw err;
+					}
+					const data = await res.json();
+					return data.elements;
+				} catch(e) {
+					lastErr = e;
+					console.warn(`Overpass mirror failed (${endpoint}): ${e.message}`); // fall through to the next mirror
+				}
 			}
-			const data = await res.json();
-			return data.elements;
+			throw lastErr || new Error('All Overpass mirrors failed');
 		}
 
 		async function fetchRoutePOIs(coords) {
@@ -156,44 +181,170 @@
 			return out;
 		}
 
-		async function fetchElevationRequest(locations) {
-			const res = await fetch('https://api.open-elevation.com/api/v1/lookup', {
-				method: 'POST',
-				headers: {'Content-Type': 'application/json'},
-				body: JSON.stringify({locations})
-			});
-			if(!res.ok) {
-				const err = new Error(`Elevation request failed (${res.status})`);
-				const retryAfter = Number(res.headers.get('Retry-After'));
-				if(!Number.isNaN(retryAfter)) err.retryAfterMs = retryAfter*1000;
-				throw err;
+		// Elevation now comes from Open-Meteo rather than Open-Elevation: the public
+		// Open-Elevation instance frequently times out on the larger requests a long
+		// route needs (so the 3D road silently stayed flat), whereas Open-Meteo is
+		// reliable, CORS-enabled, key-free, and returns the same DEM values. It's a GET
+		// with comma-joined lat/lng lists, hard-capped at 100 coords per call.
+		const OPEN_METEO_BATCH = 100;
+
+		// Open-Meteo rate-limits on BURSTS, so EVERY elevation call (the road profile AND
+		// the larger terrain corridor) funnels through one global promise chain that runs
+		// them strictly one-at-a-time with a small gap. Firing them in parallel (the
+		// original bug) drew a storm of 429s, which null-filled into flat shelves in the
+		// road and terrain. Each call retries a few times on 429 with back-off.
+		let openMeteoChain = Promise.resolve();
+		const OPEN_METEO_GAP_MS = 300; // Open-Meteo's burst window fits ~6 quick calls; stay comfortably under it
+		function throttledElevationJson(url) {
+			const run = async () => {
+				for(let attempt = 0; attempt < 4; attempt++) {
+					const res = await fetch(url);
+					if(res.status === 429) {
+						const ra = Number(res.headers.get('Retry-After'));
+						await sleep(!Number.isNaN(ra) && ra > 0 ? ra*1000 : 700*(attempt + 1));
+						continue;
+					}
+					if(!res.ok) throw new Error(`elevation HTTP ${res.status}`);
+					return res.json();
+				}
+				throw new Error('elevation HTTP 429 (retries exhausted)');
+			};
+			const result = openMeteoChain.then(run, run); // stay chained even if a prior call rejected
+			openMeteoChain = result.then(() => sleep(OPEN_METEO_GAP_MS), () => sleep(OPEN_METEO_GAP_MS));
+			return result;
+		}
+
+		// Runs batches sequentially via the throttle above. One failed batch shouldn't
+		// sink the whole profile -- its points stay null and cleanElevation()/fillNulls
+		// patch them.
+		async function fetchOpenMeteoElevations(points) {
+			const out = new Array(points.length).fill(null);
+			for(let start = 0; start < points.length; start += OPEN_METEO_BATCH) {
+				const slice = points.slice(start, start + OPEN_METEO_BATCH);
+				const lat = slice.map(p => p.lat.toFixed(5)).join(',');
+				const lng = slice.map(p => p.lng.toFixed(5)).join(',');
+				try {
+					const data = await throttledElevationJson(`https://api.open-meteo.com/v1/elevation?latitude=${lat}&longitude=${lng}`);
+					const elev = data.elevation || [];
+					for(let j = 0; j < slice.length; j++) out[start + j] = (typeof elev[j] === 'number') ? elev[j] : null;
+				} catch(e) {
+					console.error('Open-Meteo elevation batch failed:', e); // leaves this batch's points null
+				}
 			}
-			const data = await res.json();
-			return data.results;
+			return out;
+		}
+
+		// The free Open-Elevation API occasionally returns junk samples -- nulls, or a
+		// single point off by hundreds of metres -- and since samples are ~150m apart
+		// and get exaggerated by the region's elevationScale, one bad sample becomes a
+		// deep V-shaped pit in the 3D road (the "road sinks and reappears" artefact) and
+		// a bogus resistance spike. Clean the raw array before anyone uses it:
+		//   1. Replace non-finite values by linear interpolation of the nearest valid
+		//      neighbours (0 is left alone -- it's real sea level in e.g. the Netherlands).
+		//   2. Median-of-3 filter: an isolated sample that jumps far from BOTH neighbours
+		//      is a spike, not terrain (a genuine climb moves its neighbours too), so
+		//      replace it with the local median. Real sustained grades are untouched.
+		function cleanElevation(raw) {
+			const n = raw.length;
+			const a = raw.map(v => (typeof v === 'number' && isFinite(v)) ? v : null);
+			for(let i = 0; i < n; i++) {
+				if(a[i] !== null) continue;
+				let p = i - 1; while(p >= 0 && a[p] === null) p--;
+				let q = i + 1; while(q < n && a[q] === null) q++;
+				if(p < 0 && q >= n) a[i] = 0;
+				else if(p < 0) a[i] = a[q];
+				else if(q >= n) a[i] = a[p];
+				else a[i] = a[p] + (a[q] - a[p])*((i - p)/(q - p));
+			}
+			const out = a.slice();
+			const SPIKE_M = 20; // >20m jump over ~150m (~13% grade) that reverses = spike, not a real climb
+			for(let i = 1; i < n - 1; i++) {
+				const med = [a[i-1], a[i], a[i+1]].sort((x, y) => x - y)[1];
+				if(Math.abs(a[i] - med) > SPIKE_M) out[i] = med;
+			}
+			return out;
 		}
 
 		async function fetchRouteElevation() {
-			const samples = sampleRouteByDistance(0.15, 300);
-			const locations = samples.map(s => ({latitude: s.lat, longitude: s.lng}));
+			const samples = sampleRouteByDistance(0.15, 100); // one Open-Meteo call; smoothing covers the coarser spacing on long routes
+			const elev = await fetchOpenMeteoElevations(samples.map(s => ({lat: s.lat, lng: s.lng})));
+			if(elev.every(v => v == null)) {
+				logEvent('route', 'Could not load elevation data (Open-Meteo unreachable)');
+				return null;
+			}
+			return {
+				km: samples.map(s => s.km),
+				elevM: cleanElevation(elev),
+			};
+		}
 
-			let results;
-			try {
-				results = await fetchElevationRequest(locations);
-			} catch(e) {
-				const delay = e.retryAfterMs || 5000;
-				console.error(`Elevation request failed, waiting ${delay}ms before retrying:`, e);
-				await sleep(delay);
-				try {
-					results = await fetchElevationRequest(locations);
-				} catch(e2) {
-					logEvent('route', `Could not load elevation data (Open-Elevation may be busy): ${e2.message}`);
-					return null;
+		// Destination lat/lng from a start point, a compass bearing, and a distance in
+		// metres (standard great-circle formula; negative distance goes the opposite way).
+		function destinationPoint(lat, lng, bearingDeg, distM) {
+			const R = 6371000;
+			const d = distM/R, th = bearingDeg*Math.PI/180;
+			const p1 = lat*Math.PI/180, l1 = lng*Math.PI/180;
+			const sinP2 = Math.sin(p1)*Math.cos(d) + Math.cos(p1)*Math.sin(d)*Math.cos(th);
+			const p2 = Math.asin(sinP2);
+			const l2 = l1 + Math.atan2(Math.sin(th)*Math.sin(d)*Math.cos(p1), Math.cos(d) - Math.sin(p1)*sinP2);
+			return {lat: p2*180/Math.PI, lng: l2*180/Math.PI};
+		}
+
+		// Grid-fill: replace nulls by carrying the nearest valid value forward then
+		// backward, so a dropped DEM sample never leaves a hole. (Terrain keeps its
+		// sharp real features -- unlike the road profile, spikes here are mountains.)
+		function fillNulls(arr) {
+			const out = arr.slice();
+			let last = null;
+			for(let i = 0; i < out.length; i++) { if(out[i] != null) last = out[i]; else if(last != null) out[i] = last; }
+			for(let i = out.length - 1; i >= 0; i--) { if(out[i] != null) last = out[i]; else if(last != null) out[i] = last; }
+			return out.map(v => v == null ? 0 : v);
+		}
+
+		// ---------- surrounding terrain (DEM corridor) ----------
+		// Samples a real elevation heightfield in a band that FOLLOWS the route: at
+		// stations along the path, a fan of lateral points reaching HALF_WIDTH_M to each
+		// side, perpendicular to travel. This keeps terrain resolution constant no matter
+		// how long the route is (a bbox grid would be uselessly coarse on a 200km route),
+		// puts the road down the centre column so it rests in its real valley, and gives
+		// the rider actual mountainsides rising around them. Same Open-Meteo source and
+		// non-blocking treatment as the road elevation profile.
+		async function fetchRouteTerrain() {
+			if(routeTotalKm <= 0) return null;
+			// Open-Meteo caps at 100 coords/call and rate-limits bursts, so the corridor
+			// is kept to a few hundred samples total (~3-6 sequential calls). Lateral
+			// resolution (the valley cross-section that reads as walls) is prioritised;
+			// along-route stations are coarser and the mesh interpolates between them.
+			const HALF_WIDTH_M = 350; // terrain reaches ~350m each side of the road
+			const COLS = 13;          // lateral samples per station (~58m apart)
+			// Cap at 30 stations -> <=390 samples -> 4 terrain calls; with the 1-call road
+			// profile that's <=5 Open-Meteo calls per route, under the ~6-call burst limit.
+			const stations = Math.min(30, Math.max(8, Math.round(routeTotalKm*1000/250)));
+
+			const pts = [];
+			for(let s = 0; s < stations; s++) {
+				const km = routeTotalKm*(s/(stations - 1));
+				const center = latLngAtKm(km);
+				const ahead = latLngAtKm(Math.min(km + 0.02, routeTotalKm));
+				let brg = bearingDeg(center, ahead);
+				if(!isFinite(brg)) brg = 0;
+				const perp = brg + 90;
+				for(let c = 0; c < COLS; c++) {
+					const off = -HALF_WIDTH_M + (2*HALF_WIDTH_M)*(c/(COLS - 1));
+					pts.push(destinationPoint(center.lat, center.lng, perp, off));
 				}
 			}
 
+			const elev = await fetchOpenMeteoElevations(pts);
+			if(elev.every(v => v == null)) {
+				logEvent('route', 'Could not load surrounding terrain (Open-Meteo unreachable)');
+				return null;
+			}
 			return {
-				km: samples.map(s => s.km),
-				elevM: results.map(r => r.elevation),
+				stations, cols: COLS, halfWidthM: HALF_WIDTH_M,
+				lat: pts.map(p => p.lat),
+				lng: pts.map(p => p.lng),
+				elev: fillNulls(elev),
 			};
 		}
 
@@ -284,6 +435,13 @@
 					cursorKm += lenKm;
 				});
 
+				// Detect the region up front from the route's location alone (no
+				// elevation yet) and apply it BEFORE the ribbon builds, so the very
+				// first scenery pass already uses region densities/palette. Refined
+				// once the real elevation profile lands (see below).
+				region = detectRegion(coords, null);
+				if(apply3DRegion) apply3DRegion(region);
+
 				if(build3DRoute) build3DRoute(coords);
 
 				// Non-blocking: nearby POIs are a nice-to-have on top of an already
@@ -308,9 +466,37 @@
 					if(!profile) return;
 					routeElevationKm = profile.km;
 					routeElevationM = profile.elevM;
-					if(routeActive) updateRouteProgress(Math.min(distanceKm, routeTotalKm));
+					if(!routeActive) return;
+
+					// Re-detect with the real elevation signal (corroborates/overrides
+					// the bbox guess), then rebuild the ribbon so it lifts from flat
+					// into true 3D relief -- build3DRoute reads the elevation globals we
+					// just populated. POIs are re-placed onto the new elevated path.
+					region = detectRegion(routeCoords, profile);
+					if(apply3DRegion) apply3DRegion(region);
+					if(build3DRoute) build3DRoute(routeCoords);
+					if(place3DPOIs) place3DPOIs(routePOIs);
+					// The rebuild recreates the flat ground strip visible again -- re-apply
+					// any already-loaded terrain so it hides it and rebuilds against the
+					// now-correct elevation baseline.
+					if(apply3DTerrain && routeTerrain) apply3DTerrain(routeTerrain);
+
+					updateRouteProgress(Math.min(distanceKm, routeTotalKm));
 				}).catch(err => {
 					console.error('Could not fetch elevation:', err);
+				});
+
+				// Real surrounding terrain (DEM corridor) -- heaviest fetch, fully
+				// non-blocking. The ride is already flat-then-elevated by the time this
+				// lands; applying it swaps the flat ground for actual mountainsides.
+				routeTerrain = null;
+				fetchRouteTerrain().then(terrain => {
+					if(!routeActive || !terrain) return;
+					routeTerrain = terrain;
+					if(apply3DTerrain) apply3DTerrain(terrain);
+					logEvent('route', `built surrounding terrain (${terrain.stations}×${terrain.cols} DEM samples)`);
+				}).catch(err => {
+					console.error('Could not fetch terrain:', err);
 				});
 
 				if(routeLayer) map.removeLayer(routeLayer);
@@ -333,6 +519,13 @@
 				if(els.miniMapWrap) els.miniMapWrap.classList.add('show');
 				setTimeout(() => { if(miniMap) miniMap.invalidateSize(); }, 50);
 
+				// Show the ride-view progress overlay right away at 0%, so it's visible
+				// as soon as a route is chosen (before the ride even starts).
+				if(els.rideProgressLabel) {
+					els.rideProgressLabel.textContent = `0.00 / ${routeTotalKm.toFixed(1)} km · 0%`;
+					els.rideProgressLabel.classList.add('show');
+				}
+
 				els.routeStatus.textContent = `Route ready — ${routeTotalKm.toFixed(1)} km. Start your ride to begin travelling it.`;
 			} catch(err) {
 				console.error(err);
@@ -341,10 +534,15 @@
 				routePOIs = [];
 				routeElevationKm = [];
 				routeElevationM = [];
+				region = null;
+				routeTerrain = null;
 				if(els.streetNameLabel) els.streetNameLabel.classList.remove('show');
 				if(els.resistanceSuggestLabel) els.resistanceSuggestLabel.classList.remove('show');
 				if(els.miniMapWrap) els.miniMapWrap.classList.remove('show');
+				if(els.rideProgressLabel) els.rideProgressLabel.classList.remove('show');
 				if(clear3DRoute) clear3DRoute();
+				if(apply3DRegion) apply3DRegion(null); // restore generic palette/scenery, hide mountains
+				if(apply3DTerrain) apply3DTerrain(null); // remove any surrounding terrain
 				els.routeStatus.textContent = 'Could not build route: ' + err.message;
 			} finally {
 				els.findRouteBtn.disabled = false;
@@ -455,6 +653,15 @@
 			els.routeStatus.textContent = clamped >= routeTotalKm
 				? `Route complete — ${routeTotalKm.toFixed(1)} km! 🏁`
 				: `${clamped.toFixed(2)} / ${routeTotalKm.toFixed(1)} km · ${pct.toFixed(0)}%`;
+
+			// Mirror the same progress into the ride-view overlay so you can see how far
+			// along the route you are without scrolling down to the Route section.
+			if(els.rideProgressLabel) {
+				els.rideProgressLabel.textContent = clamped >= routeTotalKm
+					? `${routeTotalKm.toFixed(1)} km · 100% 🏁`
+					: `${clamped.toFixed(2)} / ${routeTotalKm.toFixed(1)} km · ${pct.toFixed(0)}%`;
+				els.rideProgressLabel.classList.add('show');
+			}
 		}
 
 		els.findRouteBtn.addEventListener('click', findRoute);
