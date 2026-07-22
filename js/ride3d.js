@@ -3,6 +3,12 @@
 		const VISUAL_SCALE = 0.75; // Tuned for rapid roadside object feedback
 		let ride3dBobPhase = 0;
 		let currentWorldProgress = 0; // Tracks overall world position for structural features
+		// Real route mode drives the camera from `distanceKm`, which only changes once per
+		// incoming BLE speed notification (often ~1-2s apart) -- without this, the camera sits
+		// frozen between packets and teleports on each one. Dead-reckon forward every frame
+		// using the last known speed, gently correcting toward the real distanceKm as new
+		// packets arrive, so motion stays smooth regardless of the sensor's notification rate.
+		let smoothRouteDistM = 0;
 
 		function init3D() {
 			if(!window.THREE || !els.ride3dCanvas) return;
@@ -1138,10 +1144,12 @@
 
 
 				if(routeCameraPath && isRiding){
-					// Real route mode: camera position comes directly from the same
-					// `distanceKm` that already drives the 2D map marker -- true
-					// distance along the actual route, not an abstract visual speed.
-					const distM = distanceKm*1000;
+					// Real route mode: camera tracks the same true `distanceKm` that
+					// drives the 2D map marker, smoothed every frame (see smoothRouteDistM
+					// above) so it doesn't sit frozen between BLE notifications.
+					smoothRouteDistM += speedMS*dt;
+					smoothRouteDistM += (distanceKm*1000 - smoothRouteDistM)*Math.min(1, dt*2);
+					const distM = smoothRouteDistM;
 					const pos = pointAtDistance(routeCameraPath, distM);
 					const lookPos = pointAtDistance(routeCameraPath, distM + 12);
 					ride3dBobPhase += dt*(3.5 + visualSpeed*0.8);
@@ -1182,6 +1190,7 @@
 					if(els.poiNameLabel) els.poiNameLabel.classList.remove('show');
 				}
 				else if(routeCameraPath && !isRiding){
+				smoothRouteDistM = 0;
 				const startPos = pointAtDistance(routeCameraPath, 0);
 				const lookPos = pointAtDistance(routeCameraPath, 12);
 				camera.position.set(startPos.x, BASE_CAM_Y, startPos.z);
