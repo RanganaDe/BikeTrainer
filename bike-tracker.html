@@ -4,6 +4,37 @@
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Cadence Log — Ride Tracker</title>
+	<script>
+	// Temporary on-page error console for browsers with no accessible dev tools (e.g. Bluefy on iOS/iPadOS).
+	// Shows JS errors, unhandled promise rejections, and failed script/resource loads directly on screen.
+	(function() {
+		var box = document.createElement('div');
+		box.style.cssText = 'position:fixed;left:0;right:0;bottom:0;max-height:35vh;overflow:auto;'
+			+ 'background:#1a0000;color:#ffb3b3;font:11px/1.4 monospace;padding:6px 8px;z-index:2147483647;'
+			+ 'white-space:pre-wrap;display:none;';
+		function mount() {
+			if(document.body) document.body.appendChild(box);
+			else document.addEventListener('DOMContentLoaded', function() { document.body.appendChild(box); });
+		}
+		mount();
+		function log(msg) {
+			box.style.display = 'block';
+			var line = document.createElement('div');
+			line.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+			box.appendChild(line);
+		}
+		window.addEventListener('error', function(e) {
+			if(e.target && e.target !== window && (e.target.tagName === 'SCRIPT' || e.target.tagName === 'LINK')) {
+				log('FAILED TO LOAD: ' + (e.target.src || e.target.href));
+			} else {
+				log('ERROR: ' + e.message + ' (' + (e.filename || '?') + ':' + e.lineno + ')');
+			}
+		}, true);
+		window.addEventListener('unhandledrejection', function(e) {
+			log('UNHANDLED REJECTION: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+		});
+	})();
+	</script>
 	<link rel="preconnect" href="https://fonts.googleapis.com">
 	<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
 	<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
