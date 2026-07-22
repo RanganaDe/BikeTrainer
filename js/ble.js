@@ -172,7 +172,7 @@
 		// Bluefy (and some other non-Chrome Web Bluetooth implementations) don't resolve the
 		// human-readable short names Chrome accepts (e.g. 'fitness_machine'). Explicit
 		// Bluetooth SIG UUIDs work identically everywhere, so we use those instead.
-		const UUID = {
+		const BLE_SERVICE_UUID = {
 			fitnessMachine: '00001826-0000-1000-8000-00805f9b34fb',
 			indoorBikeData: '00002ad2-0000-1000-8000-00805f9b34fb',
 			cyclingPower: '00001818-0000-1000-8000-00805f9b34fb',
@@ -187,11 +187,11 @@
 				setStatus('connecting', 'connecting…');
 				device = await navigator.bluetooth.requestDevice({
 					filters: [
-						{services: [UUID.fitnessMachine]},
-						{services: [UUID.cyclingPower]},
-						{services: [UUID.cyclingSpeedCadence]},
+						{services: [BLE_SERVICE_UUID.fitnessMachine]},
+						{services: [BLE_SERVICE_UUID.cyclingPower]},
+						{services: [BLE_SERVICE_UUID.cyclingSpeedCadence]},
 					],
-					optionalServices: [UUID.fitnessMachine, UUID.cyclingPower, UUID.cyclingSpeedCadence, UUID.deviceInformation]
+					optionalServices: [BLE_SERVICE_UUID.fitnessMachine, BLE_SERVICE_UUID.cyclingPower, BLE_SERVICE_UUID.cyclingSpeedCadence, BLE_SERVICE_UUID.deviceInformation]
 				});
 				device.addEventListener('gattserverdisconnected', onDisconnected);
 				logEvent('connect', `device picked: <b>${escapeHtml(device.name || '(unnamed)')}</b>, id=${escapeHtml(device.id)}`);
@@ -202,8 +202,8 @@
 
 				usingFTMS = false;
 				try {
-					const ftms = await server.getPrimaryService(UUID.fitnessMachine);
-					const indoorBike = await ftms.getCharacteristic(UUID.indoorBikeData);
+					const ftms = await server.getPrimaryService(BLE_SERVICE_UUID.fitnessMachine);
+					const indoorBike = await ftms.getCharacteristic(BLE_SERVICE_UUID.indoorBikeData);
 					await indoorBike.startNotifications();
 					indoorBike.addEventListener('characteristicvaluechanged', handleIndoorBikeData);
 					usingFTMS = true;
@@ -215,8 +215,8 @@
 				if(!usingFTMS) {
 					let gotPower = false, gotSpeed = false;
 					try {
-						const cps = await server.getPrimaryService(UUID.cyclingPower);
-						const powerChar = await cps.getCharacteristic(UUID.cyclingPowerMeasurement);
+						const cps = await server.getPrimaryService(BLE_SERVICE_UUID.cyclingPower);
+						const powerChar = await cps.getCharacteristic(BLE_SERVICE_UUID.cyclingPowerMeasurement);
 						await powerChar.startNotifications();
 						powerChar.addEventListener('characteristicvaluechanged', handlePowerMeasurement);
 						gotPower = true;
@@ -225,8 +225,8 @@
 						logEvent('connect', 'no cycling_power service found');
 					}
 					try {
-						const csc = await server.getPrimaryService(UUID.cyclingSpeedCadence);
-						const cscChar = await csc.getCharacteristic(UUID.cscMeasurement);
+						const csc = await server.getPrimaryService(BLE_SERVICE_UUID.cyclingSpeedCadence);
+						const cscChar = await csc.getCharacteristic(BLE_SERVICE_UUID.cscMeasurement);
 						await cscChar.startNotifications();
 						cscChar.addEventListener('characteristicvaluechanged', handleCSCMeasurement);
 						gotSpeed = true;
