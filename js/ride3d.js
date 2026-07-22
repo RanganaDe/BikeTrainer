@@ -1148,7 +1148,15 @@
 					// drives the 2D map marker, smoothed every frame (see smoothRouteDistM
 					// above) so it doesn't sit frozen between BLE notifications.
 					smoothRouteDistM += speedMS*dt;
-					smoothRouteDistM += (distanceKm*1000 - smoothRouteDistM)*Math.min(1, dt*2);
+					// Only correct FORWARD, toward a newer real distanceKm that's further along --
+					// never backward. Between notifications, dead-reckoning above legitimately runs
+					// ahead of the last known distanceKm (which only updates once per BLE packet);
+					// correcting toward it unconditionally would drag the camera back and undo that
+					// progress every frame, which is what caused the earlier "goes, holds" stutter.
+					const routeTargetDistM = distanceKm*1000;
+					if(routeTargetDistM > smoothRouteDistM) {
+						smoothRouteDistM += (routeTargetDistM - smoothRouteDistM)*Math.min(1, dt*2);
+					}
 					const distM = smoothRouteDistM;
 					const pos = pointAtDistance(routeCameraPath, distM);
 					const lookPos = pointAtDistance(routeCameraPath, distM + 12);
