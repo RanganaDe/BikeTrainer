@@ -29,6 +29,7 @@
 		}
 
 		function renderDebug() {
+			if(!els.debugPanel.classList.contains('show')) return; // skip the DOM rebuild while hidden -- this runs on every BLE packet
 			if(debugEntries.length === 0) {
 				els.debugList.innerHTML = `<div class="debug-empty">No packets yet — connect and start pedaling.</div>`;
 				return;
@@ -46,6 +47,7 @@
 
 		els.debugBtn.addEventListener('click', () => {
 			els.debugPanel.classList.toggle('show');
+			renderDebug();
 		});
 
 		els.debugClear.addEventListener('click', () => {
