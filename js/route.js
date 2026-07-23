@@ -4,6 +4,11 @@
 		let routeCumDist = [];  // cumulative km at each coordinate
 		let routeTotalKm = 0;
 		let routeActive = false;
+		// Bumped on every findRoute() call. Each run's fire-and-forget POI/elevation/
+		// terrain callbacks capture the value at launch and bail if it no longer matches,
+		// so a superseding route (or a cleared route) can't have its globals/3D scene
+		// clobbered by a slow in-flight fetch from a previous one.
+		let routeGeneration = 0;
 		let followRider = true;
 		let routeFromLabel = '', routeToLabel = '';
 		let routeStreetSegments = []; // [{name, fromKm, toKm}, ...] built from OSRM's turn-by-turn steps
@@ -188,6 +193,35 @@
 		// with comma-joined lat/lng lists, hard-capped at 100 coords per call.
 		const OPEN_METEO_BATCH = 100;
 
+		// Elevation + terrain are STATIC for a given route, and re-riding or re-testing the
+		// same route is common -- so cache both in localStorage keyed by the route geometry.
+		// Every repeat of a route then costs ZERO Open-Meteo calls, which is the main defence
+		// against the burst 429s (otherwise a handful of test rides fire the same ~5 elevation
+		// calls again and again). Arrays are small; a short LRU cap bounds storage.
+		const ELEV_CACHE_PREFIX = 'bt_elev_';
+		const ELEV_CACHE_INDEX = 'bt_elev_index';
+		const ELEV_CACHE_MAX = 12;
+		function routeSignature() {
+			if(!routeCoords.length) return '0';
+			const a = routeCoords[0], b = routeCoords[routeCoords.length - 1];
+			return `${a.lat.toFixed(4)},${a.lng.toFixed(4)}_${b.lat.toFixed(4)},${b.lng.toFixed(4)}_${routeTotalKm.toFixed(2)}_${routeCoords.length}`;
+		}
+		function elevCacheGet(kind, sig) {
+			try { const v = localStorage.getItem(ELEV_CACHE_PREFIX + kind + '_' + sig); return v ? JSON.parse(v) : null; }
+			catch(e) { return null; }
+		}
+		function elevCacheSet(kind, sig, data) {
+			const key = ELEV_CACHE_PREFIX + kind + '_' + sig;
+			try {
+				localStorage.setItem(key, JSON.stringify(data));
+				let idx = [];
+				try { idx = JSON.parse(localStorage.getItem(ELEV_CACHE_INDEX)) || []; } catch(e) {}
+				idx = idx.filter(k => k !== key); idx.push(key);
+				while(idx.length > ELEV_CACHE_MAX) { const old = idx.shift(); localStorage.removeItem(old); }
+				localStorage.setItem(ELEV_CACHE_INDEX, JSON.stringify(idx));
+			} catch(e) { /* quota exceeded or storage disabled -- caching is best-effort */ }
+		}
+
 		// Open-Meteo rate-limits on BURSTS, so EVERY elevation call (the road profile AND
 		// the larger terrain corridor) funnels through one global promise chain that runs
 		// them strictly one-at-a-time with a small gap. Firing them in parallel (the
@@ -197,11 +231,11 @@
 		const OPEN_METEO_GAP_MS = 300; // Open-Meteo's burst window fits ~6 quick calls; stay comfortably under it
 		function throttledElevationJson(url) {
 			const run = async () => {
-				for(let attempt = 0; attempt < 4; attempt++) {
+				for(let attempt = 0; attempt < 3; attempt++) {
 					const res = await fetch(url);
 					if(res.status === 429) {
 						const ra = Number(res.headers.get('Retry-After'));
-						await sleep(!Number.isNaN(ra) && ra > 0 ? ra*1000 : 700*(attempt + 1));
+						await sleep(!Number.isNaN(ra) && ra > 0 ? ra*1000 : 900*(attempt + 1));
 						continue;
 					}
 					if(!res.ok) throw new Error(`elevation HTTP ${res.status}`);
@@ -229,6 +263,11 @@
 					for(let j = 0; j < slice.length; j++) out[start + j] = (typeof elev[j] === 'number') ? elev[j] : null;
 				} catch(e) {
 					console.error('Open-Meteo elevation batch failed:', e); // leaves this batch's points null
+					// Once the server is actively rate-limiting us, the remaining batches will
+					// 429 too -- hammering them just deepens the block and floods the console.
+					// Stop here; whatever batches already landed stand, and the caller degrades
+					// gracefully on the nulls (flat where unknown, or terrain-derived later).
+					if(String(e.message).includes('429')) break;
 				}
 			}
 			return out;
@@ -266,16 +305,21 @@
 		}
 
 		async function fetchRouteElevation() {
+			const sig = routeSignature(); // pinned before any await, so a mid-fetch route switch can't mis-key the cache
+			const cached = elevCacheGet('road', sig);
+			if(cached) return cached;
 			const samples = sampleRouteByDistance(0.15, 100); // one Open-Meteo call; smoothing covers the coarser spacing on long routes
 			const elev = await fetchOpenMeteoElevations(samples.map(s => ({lat: s.lat, lng: s.lng})));
 			if(elev.every(v => v == null)) {
 				logEvent('route', 'Could not load elevation data (Open-Meteo unreachable)');
 				return null;
 			}
-			return {
+			const profile = {
 				km: samples.map(s => s.km),
 				elevM: cleanElevation(elev),
 			};
+			elevCacheSet('road', sig, profile);
+			return profile;
 		}
 
 		// Destination lat/lng from a start point, a compass bearing, and a distance in
@@ -311,15 +355,18 @@
 		// non-blocking treatment as the road elevation profile.
 		async function fetchRouteTerrain() {
 			if(routeTotalKm <= 0) return null;
+			const sig = routeSignature(); // pinned before any await (see fetchRouteElevation)
+			const cached = elevCacheGet('terrain', sig);
+			if(cached) return cached;
 			// Open-Meteo caps at 100 coords/call and rate-limits bursts, so the corridor
-			// is kept to a few hundred samples total (~3-6 sequential calls). Lateral
+			// is kept to a few hundred samples total (~3 sequential calls). Lateral
 			// resolution (the valley cross-section that reads as walls) is prioritised;
 			// along-route stations are coarser and the mesh interpolates between them.
 			const HALF_WIDTH_M = 350; // terrain reaches ~350m each side of the road
 			const COLS = 13;          // lateral samples per station (~58m apart)
-			// Cap at 30 stations -> <=390 samples -> 4 terrain calls; with the 1-call road
-			// profile that's <=5 Open-Meteo calls per route, under the ~6-call burst limit.
-			const stations = Math.min(30, Math.max(8, Math.round(routeTotalKm*1000/250)));
+			// Cap at 22 stations -> <=286 samples -> 3 terrain calls; with the 1-call road
+			// profile that's <=4 Open-Meteo calls per route, well under the burst limit.
+			const stations = Math.min(22, Math.max(8, Math.round(routeTotalKm*1000/250)));
 
 			const pts = [];
 			for(let s = 0; s < stations; s++) {
@@ -340,12 +387,14 @@
 				logEvent('route', 'Could not load surrounding terrain (Open-Meteo unreachable)');
 				return null;
 			}
-			return {
+			const terrain = {
 				stations, cols: COLS, halfWidthM: HALF_WIDTH_M,
 				lat: pts.map(p => p.lat),
 				lng: pts.map(p => p.lng),
 				elev: fillNulls(elev),
 			};
+			elevCacheSet('terrain', sig, terrain);
+			return terrain;
 		}
 
 		function initMap() {
@@ -387,6 +436,7 @@
 				els.routeStatus.textContent = 'Enter a start and destination.';
 				return;
 			}
+			const myRun = ++routeGeneration; // invalidates any prior route's in-flight callbacks
 			initMap();
 			els.findRouteBtn.disabled = true;
 			els.routeStatus.textContent = 'Looking up locations…';
@@ -450,6 +500,7 @@
 				routePOIs = [];
 				if(place3DPOIs) place3DPOIs([]);
 				fetchRoutePOIs(coords).then(pois => {
+					if(myRun !== routeGeneration) return; // a newer route (or a clear) superseded this one
 					routePOIs = pois;
 					if(place3DPOIs) place3DPOIs(pois);
 					logEvent('route', `found ${pois.length} nearby place${pois.length === 1 ? '' : 's'} from OpenStreetMap`);
@@ -463,10 +514,9 @@
 				routeElevationM = [];
 				if(els.resistanceSuggestLabel) els.resistanceSuggestLabel.classList.remove('show');
 				fetchRouteElevation().then(profile => {
-					if(!profile) return;
+					if(myRun !== routeGeneration || !profile) return; // stale route -- don't clobber the current one's globals
 					routeElevationKm = profile.km;
 					routeElevationM = profile.elevM;
-					if(!routeActive) return;
 
 					// Re-detect with the real elevation signal (corroborates/overrides
 					// the bbox guess), then rebuild the ribbon so it lifts from flat
@@ -491,8 +541,25 @@
 				// lands; applying it swaps the flat ground for actual mountainsides.
 				routeTerrain = null;
 				fetchRouteTerrain().then(terrain => {
-					if(!routeActive || !terrain) return;
+					if(myRun !== routeGeneration || !terrain) return; // stale route -- ignore this corridor
 					routeTerrain = terrain;
+					// If the road elevation profile didn't load (e.g. its Open-Meteo call was
+					// rate-limited) but the terrain corridor did, derive the road profile from
+					// the terrain's centre column. Otherwise the ribbon + rider stay flat at 0
+					// while real mountains rise around them, so the road/rider appear to sink
+					// into the mountainside. Deriving it from the same DEM keeps them exactly
+					// on the valley floor. A later successful road fetch refines this.
+					if(routeElevationKm.length < 2 && terrain.stations > 1) {
+						const mid = Math.floor(terrain.cols/2), km = [], elevM = [];
+						for(let s = 0; s < terrain.stations; s++) {
+							km.push(routeTotalKm*(s/(terrain.stations - 1)));
+							elevM.push(terrain.elev[s*terrain.cols + mid]);
+						}
+						routeElevationKm = km;
+						routeElevationM = elevM;
+						if(build3DRoute) build3DRoute(routeCoords); // lift the ribbon onto the derived profile
+						if(place3DPOIs) place3DPOIs(routePOIs);
+					}
 					if(apply3DTerrain) apply3DTerrain(terrain);
 					logEvent('route', `built surrounding terrain (${terrain.stations}×${terrain.cols} DEM samples)`);
 				}).catch(err => {
@@ -529,6 +596,7 @@
 				els.routeStatus.textContent = `Route ready — ${routeTotalKm.toFixed(1)} km. Start your ride to begin travelling it.`;
 			} catch(err) {
 				console.error(err);
+				routeGeneration++; // invalidate this failed run's own in-flight callbacks too
 				routeActive = false;
 				routeStreetSegments = [];
 				routePOIs = [];
@@ -578,17 +646,32 @@
 
 		let lastMiniMapBearing = 0;
 
-		// Average gradient of whichever elevation sample segment covers `km` --
-		// samples are ~150m apart (see sampleRouteByDistance), so this is a "grade
-		// over the next stretch" figure, not a jittery point-to-point one.
+		// Real elevation (metres) interpolated at a distance `km` along the route.
+		function elevAtKm(km) {
+			if(routeElevationKm.length < 2) return 0; // no profile yet -- treat as flat rather than deref undefined
+			const k = Math.max(0, Math.min(km, routeTotalKm));
+			let i = 0;
+			while(i < routeElevationKm.length - 2 && routeElevationKm[i + 1] < k) i++;
+			const kmA = routeElevationKm[i], kmB = routeElevationKm[i + 1];
+			const span = kmB - kmA;
+			const t = span > 0 ? (k - kmA)/span : 0;
+			return routeElevationM[i] + (routeElevationM[i + 1] - routeElevationM[i])*t;
+		}
+
+		// Average gradient over a ~400m window from `km` forward (or the window ending at
+		// the finish, near the end). Windowed rather than the single ~200m DEM segment it
+		// used before, because point-to-point DEM samples are noisy (±20% spikes on steep
+		// ground) -- averaging over 400m gives a stable "how steep is this stretch" figure
+		// that climbs and eases smoothly instead of flickering or reading a lone bad sample.
 		function gradePercentAtKm(km) {
 			if(routeElevationKm.length < 2) return null;
-			let i = 0;
-			while(i < routeElevationKm.length - 2 && routeElevationKm[i + 1] < km) i++;
-			const kmA = routeElevationKm[i], kmB = routeElevationKm[i + 1];
-			const distM = (kmB - kmA)*1000;
-			if(distM <= 0) return 0;
-			return ((routeElevationM[i + 1] - routeElevationM[i])/distM)*100;
+			const WINDOW_KM = 0.4;
+			let a = Math.max(0, Math.min(km, routeTotalKm));
+			let b = a + WINDOW_KM;
+			if(b > routeTotalKm) { b = routeTotalKm; a = Math.max(0, b - WINDOW_KM); }
+			const distM = (b - a)*1000;
+			if(distM < 1) return 0;
+			return ((elevAtKm(b) - elevAtKm(a))/distM)*100;
 		}
 
 		// A simple, common cycling-gradient bucketing -- flat/downhill needs the

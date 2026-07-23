@@ -466,7 +466,7 @@
 		}
 
 		#ride3dCanvas {
-			height: 260px;
+			height: 420px;
 			border-radius: var(--radius);
 			border: 1px solid var(--border);
 			background: #0b0f14;
@@ -512,7 +512,7 @@
 
 		.poi-name-label {
 			top: auto;
-			bottom: 10px;
+			bottom: 78px; /* clear the HUD bar pinned to the bottom */
 			left: 10px;
 			max-width: 70%;
 			border-color: rgba(244, 196, 48, 0.35);
@@ -521,7 +521,7 @@
 
 		.resistance-label {
 			top: auto;
-			bottom: 10px;
+			bottom: 78px; /* clear the HUD bar pinned to the bottom */
 			left: auto;
 			right: 10px;
 			max-width: 45%;
@@ -529,6 +529,69 @@
 			border-color: rgba(77, 200, 255, 0.35);
 			color: var(--speed);
 			font-family: 'JetBrains Mono', monospace;
+		}
+
+		/* Zwift-style live data bar overlaid across the bottom of the 3D ride view. */
+		.ride-hud {
+			position: absolute;
+			left: 50%;
+			bottom: 10px;
+			transform: translateX(-50%);
+			display: flex;
+			gap: 6px;
+			padding: 6px;
+			background: linear-gradient(180deg, rgba(12, 15, 18, 0.55), rgba(12, 15, 18, 0.82));
+			border: 1px solid rgba(255, 255, 255, 0.10);
+			border-radius: 12px;
+			box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+			backdrop-filter: blur(3px);
+			-webkit-backdrop-filter: blur(3px);
+			z-index: 3;
+			pointer-events: none;
+			max-width: calc(100% - 20px);
+		}
+
+		.ride-hud .hud-tile {
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			justify-content: center;
+			min-width: 62px;
+			padding: 4px 8px;
+			border-radius: 8px;
+			background: rgba(255, 255, 255, 0.03);
+		}
+
+		.ride-hud .hud-tile + .hud-tile {
+			border-left: 1px solid rgba(255, 255, 255, 0.07);
+		}
+
+		.ride-hud .hud-value {
+			font-family: 'JetBrains Mono', monospace;
+			font-size: 22px;
+			font-weight: 700;
+			line-height: 1.05;
+			color: var(--text);
+			font-variant-numeric: tabular-nums;
+		}
+
+		.ride-hud .hud-value.power { color: var(--power); }
+		.ride-hud .hud-value.speed { color: var(--speed); }
+
+		.ride-hud .hud-unit {
+			margin-top: 2px;
+			font-family: 'Space Grotesk', sans-serif;
+			font-size: 9px;
+			font-weight: 600;
+			letter-spacing: 0.06em;
+			text-transform: uppercase;
+			color: var(--text-muted);
+		}
+
+		@media (max-width: 520px) {
+			.ride-hud .hud-tile.hud-optional { display: none; }
+			.ride-hud .hud-value { font-size: 19px; }
+			.ride-hud .hud-tile { min-width: 52px; }
 		}
 
 		.progress-label {
@@ -946,6 +1009,13 @@
 			<div id="resistanceSuggestLabel" class="street-name-label resistance-label"></div>
 			<div id="rideProgressLabel" class="street-name-label progress-label"></div>
 			<div id="miniMapWrap" class="minimap-wrap"><div id="miniMap" style="position:absolute; width:170%; height:170%; left:-35%; top:-35%; transform-origin:50% 50%;"></div></div>
+			<div class="ride-hud" id="rideHud">
+				<div class="hud-tile"><div class="hud-value power" id="hudPower">–</div><div class="hud-unit">watts</div></div>
+				<div class="hud-tile"><div class="hud-value" id="hudCadence">–</div><div class="hud-unit">rpm</div></div>
+				<div class="hud-tile"><div class="hud-value speed" id="hudSpeed">–</div><div class="hud-unit">km/h</div></div>
+				<div class="hud-tile hud-optional"><div class="hud-value" id="hudDistance">0.0</div><div class="hud-unit">km</div></div>
+				<div class="hud-tile hud-optional"><div class="hud-value" id="hudTime">0:00</div><div class="hud-unit">time</div></div>
+			</div>
 		</div>
 	</div>
 

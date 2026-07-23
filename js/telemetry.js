@@ -3,6 +3,7 @@
 		let usingFTMS = false;
 		let lastPower = null;
 		let lastSpeed = null;
+		let lastCadence = null; // also read by the 3D avatar to drive pedalling speed
 		let lastSpeedTs = null;
 		let prevWheelRevs = null, prevWheelEventTime = null;
 
@@ -21,6 +22,7 @@
 		function updatePower(watts) {
 			lastPower = watts;
 			els.powerValue.textContent = Math.round(watts);
+			if(els.hudPower) els.hudPower.textContent = Math.round(watts);
 			const frac = Math.max(0, Math.min(1, watts/POWER_SCALE_MAX));
 			els.powerRing.style.strokeDashoffset = RING_CIRC*(1 - frac);
 			if(isRiding && !isPaused) {
@@ -40,10 +42,14 @@
 			lastSpeed = kmh;
 			lastSpeedTs = now;
 			els.speedValue.textContent = kmh.toFixed(1);
+			if(els.hudSpeed) els.hudSpeed.textContent = kmh.toFixed(1);
+			if(els.hudDistance && isRiding) els.hudDistance.textContent = distanceKm.toFixed(1);
 		}
 
 		function updateCadence(rpm) {
+			lastCadence = rpm;
 			els.cadenceValue.textContent = Math.round(rpm);
+			if(els.hudCadence) els.hudCadence.textContent = Math.round(rpm);
 		}
 
 		function updateBikeDistance(meters) {

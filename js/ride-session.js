@@ -4,6 +4,7 @@
 		function tickTimer() {
 			const sec = Math.floor((elapsedMsBeforePause + (Date.now() - rideStartTs))/1000);
 			els.timerDisplay.textContent = fmtDuration(sec);
+			if(els.hudTime) els.hudTime.textContent = fmtDuration(sec);
 		}
 
 		function startRide() {
@@ -16,6 +17,8 @@
 			powerMax = 0;
 			distanceKm = 0;
 			lastSpeedTs = performance.now();
+			if(els.hudDistance) els.hudDistance.textContent = '0.0';
+			if(els.hudTime) els.hudTime.textContent = '0:00';
 			if(routeActive) updateRouteProgress(0);
 			els.rideBtn.textContent = 'Stop ride';
 			els.rideBtn.classList.add('stop');
@@ -71,14 +74,16 @@
 			els.timerDisplay.classList.remove('active');
 
 			if(duration >= 5) {
-				const caloriesText = els.caloriesValue.textContent;
+				const caloriesNum = Number(els.caloriesValue.textContent);
 				const entry = {
 					ts: rideStartTs,
 					duration,
 					avgPower: powerCount ? Math.round(powerSum/powerCount) : 0,
 					maxPower: Math.round(powerMax),
 					distanceKm: distanceKm,
-					caloriesKcal: caloriesText && caloriesText !== '–' ? Number(caloriesText) : null,
+					// Number.isFinite rejects both the '–' placeholder and any non-numeric
+					// tile text, so NaN never reaches storage/Firestore or the share image.
+					caloriesKcal: Number.isFinite(caloriesNum) ? caloriesNum : null,
 				};
 				if(routeActive) {
 					entry.routeFrom = routeFromLabel;

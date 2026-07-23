@@ -862,7 +862,15 @@
 			}
 
 			function disposeGroup(group) {
-				group.traverse(o => { if(o.geometry) o.geometry.dispose(); });
+				group.traverse(o => {
+					if(o.geometry) o.geometry.dispose();
+					// Per-route materials/textures are opt-in (shared ones must survive): only
+					// objects tagged disposeMat get their material + canvas texture freed.
+					if(o.userData.disposeMat && o.material) {
+						if(o.material.map) o.material.map.dispose();
+						o.material.dispose();
+					}
+				});
 			}
 
 			function clearRouteRibbon() {
@@ -912,6 +920,55 @@
 					out[i] = sum/n;
 				}
 				return out;
+			}
+
+			// ---------- Route world decoration (Zwift-style gantries + roadside crowds) ----------
+			function makeBannerTexture(text, accentCss) {
+				const c = document.createElement('canvas'); c.width = 512; c.height = 128;
+				const ctx = c.getContext('2d');
+				ctx.fillStyle = '#0e1216'; ctx.fillRect(0, 0, 512, 128);
+				ctx.fillStyle = accentCss; ctx.fillRect(0, 0, 512, 12); ctx.fillRect(0, 116, 512, 12);
+				ctx.fillStyle = '#ecedef'; ctx.font = 'bold 64px "JetBrains Mono", monospace';
+				ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+				ctx.fillText(text, 256, 68);
+				const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding; return t;
+			}
+			const gantryPostGeom = new THREE.CylinderGeometry(0.12, 0.14, 4.4, 8);
+			const gantryPostMat = new THREE.MeshStandardMaterial({color: 0x2a2e33, roughness: 0.6, metalness: 0.4});
+			const gantrySpan = ROAD_WIDTH + 2.4;
+			const gantryBeamGeom = new THREE.BoxGeometry(gantrySpan, 0.55, 0.3);
+			const gantryBoardGeom = new THREE.PlaneGeometry(gantrySpan*0.86, 1.0);
+			// A banner spanning the road on two posts, the rider passing under it. Built in
+			// local space with the span along local X (perpendicular to travel); the caller
+			// wraps + orients it to the road direction like the roadside scenery does.
+			function buildGantry(text, accentCss) {
+				const g = new THREE.Group();
+				[-1, 1].forEach(s => { const p = new THREE.Mesh(gantryPostGeom, gantryPostMat); p.position.set(s*gantrySpan/2, 2.2, 0); g.add(p); });
+				const beam = new THREE.Mesh(gantryBeamGeom, gantryPostMat); beam.position.y = 4.2; g.add(beam);
+				const boardMat = new THREE.MeshBasicMaterial({map: makeBannerTexture(text, accentCss)});
+				const front = new THREE.Mesh(gantryBoardGeom, boardMat); front.position.set(0, 3.95, 0.17); front.userData.disposeMat = true; g.add(front);
+				const back = new THREE.Mesh(gantryBoardGeom, boardMat); back.position.set(0, 3.95, -0.17); back.rotation.y = Math.PI; g.add(back);
+				return g;
+			}
+			const crowdBodyGeom = new THREE.CylinderGeometry(0.13, 0.16, 0.55, 6);
+			const crowdHeadGeom = new THREE.SphereGeometry(0.11, 6, 5);
+			// Shared spectator jersey materials (built once, reused across every route) so
+			// re-routing doesn't churn a fresh material per figure.
+			const crowdBodyMats = [0xff5252, 0x4dc8ff, 0xf4c430, 0x9be29b, 0xffffff, 0xff9f43, 0xb388ff]
+				.map(c => new THREE.MeshStandardMaterial({color: c, roughness: 0.8}));
+			// A little cluster of spectators (body + head) scattered on one side of the road.
+			function buildCrowd(n) {
+				const g = new THREE.Group();
+				for(let i = 0; i < n; i++) {
+					const f = new THREE.Group();
+					const body = new THREE.Mesh(crowdBodyGeom, crowdBodyMats[(Math.random()*crowdBodyMats.length)|0]);
+					body.position.y = 0.28; f.add(body);
+					const head = new THREE.Mesh(crowdHeadGeom, cyclistSkinMat); head.position.y = 0.62; f.add(head);
+					f.position.set((Math.random() - 0.5)*3, 0, (Math.random() - 0.5)*4.5);
+					f.rotation.y = Math.random()*Math.PI*2;
+					g.add(f);
+				}
+				return g;
 			}
 
 			function buildRouteRibbon(coordsLatLng) {
@@ -1076,6 +1133,27 @@
 					populateScenery(sceneryWrap, d);
 				}
 
+				// Distance gantries over the road (START, every 5 km, FINISH) + start/finish
+				// crowds. Placed via a wrap oriented to the road direction, like the scenery.
+				function placeAtRoad(d, builder) {
+					if(d < 0 || d > totalLen) return;
+					const {p, dx, dz} = directionAt(d);
+					const wrap = new THREE.Group();
+					wrap.position.set(p.x, p.y || 0, p.z);
+					wrap.lookAt(p.x + dx, p.y || 0, p.z + dz);
+					wrap.add(builder());
+					routeRibbonGroup.add(wrap);
+				}
+				placeAtRoad(Math.min(25, totalLen*0.02), () => buildGantry('START', '#9be29b'));
+				for(let km = 5; km*1000 < totalLen - 250; km += 5) {
+					placeAtRoad(km*1000, () => buildGantry(km + ' KM', '#4dc8ff'));
+				}
+				placeAtRoad(totalLen - Math.min(25, totalLen*0.02), () => buildGantry('FINISH', '#f4c430'));
+				[[-1], [1]].forEach(([side]) => {
+					placeAtRoad(18, () => { const c = buildCrowd(8); c.position.x = side*(ROAD_WIDTH/2 + 1.8); return c; });
+					placeAtRoad(totalLen - 18, () => { const c = buildCrowd(8); c.position.x = side*(ROAD_WIDTH/2 + 1.8); return c; });
+				});
+
 				scene.add(routeRibbonGroup);
 				routeCameraPath = pathObj;
 
@@ -1094,6 +1172,28 @@
 				const ay = path.heights ? path.heights[i] : 0;
 				const by = path.heights ? (path.heights[i+1] !== undefined ? path.heights[i+1] : ay) : 0;
 				return { x: a.x + (b.x - a.x)*t, y: ay + (by - ay)*t, z: a.z + (b.z - a.z)*t };
+			}
+
+			// Height floor so the camera never sinks beneath the terrain where the route
+			// folds back on itself (hairpins): the adjacent limb's terrain is carved to
+			// THAT limb's road height (see buildTerrainMesh's distToRoute), which can sit
+			// well above the limb you're actually on. We lift the camera to clear the
+			// highest road height within a short lateral radius, so it rides over the
+			// folded mountainside instead of ending up under it (seeing its green
+			// underside as sky). A bounded stride keeps this cheap in the per-frame loop;
+			// on non-folded stretches the nearby max is ~the current road height, so the
+			// floor sits below the normal eye-height camera and changes nothing.
+			const ROUTE_FLOOR_RADIUS2 = 40*40, ROUTE_FLOOR_CLEARANCE = 0.8;
+			function routeGroundFloorY(path, x, z) {
+				if(!path || !path.heights) return -Infinity;
+				const pts = path.points, hs = path.heights;
+				const stride = Math.max(1, Math.floor(pts.length/300));
+				let maxH = -Infinity;
+				for(let k = 0; k < pts.length; k += stride) {
+					const dx = pts[k].x - x, dz = pts[k].z - z;
+					if(dx*dx + dz*dz <= ROUTE_FLOOR_RADIUS2 && hs[k] > maxH) maxH = hs[k];
+				}
+				return maxH === -Infinity ? -Infinity : maxH + ROUTE_FLOOR_CLEARANCE;
 			}
 
 			build3DRoute = buildRouteRibbon;
@@ -1362,30 +1462,158 @@
 			applyTimeOfDay();
 			setInterval(applyTimeOfDay, 60000); // real time keeps moving during a long ride
 
+			// ---------- Cyclist model (shared by the player avatar and the rival) ----------
+			// A low-poly road cyclist facing -Z: frame, two spinning wheels with visible
+			// spokes, handlebars, a rider leaning over the bars, and two legs that pedal.
+			// Returned with named handles + a private phase/spin so animate() can drive the
+			// wheel roll and pedal stroke from real cadence/speed, independently per rider.
+			const WHEEL_R = 0.34;
+			function connectTube(ax, ay, az, bx, by, bz, r, mat) {
+				const dx = bx - ax, dy = by - ay, dz = bz - az;
+				const len = Math.hypot(dx, dy, dz) || 0.001;
+				const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 6), mat);
+				m.position.set((ax + bx)/2, (ay + by)/2, (az + bz)/2);
+				m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(dx, dy, dz).normalize());
+				return m;
+			}
+			const cyclistWheelGeom = new THREE.TorusGeometry(WHEEL_R, 0.045, 8, 18);
+			const cyclistTireMat = new THREE.MeshStandardMaterial({color: 0x141414, roughness: 0.7});
+			const cyclistMetalMat = new THREE.MeshStandardMaterial({color: 0x9aa0a8, roughness: 0.35, metalness: 0.6});
+			const cyclistSkinMat = new THREE.MeshStandardMaterial({color: 0xdba074, roughness: 0.7});
+			const cyclistSpokeGeom = new THREE.BoxGeometry(0.012, WHEEL_R*1.75, 0.012);
+			const BB = {x: 0, y: 0.34, z: 0.06}; // bottom-bracket / crank centre
+			function buildCyclist(jerseyHex, shortsHex) {
+				const g = new THREE.Group();
+				const jersey = new THREE.MeshStandardMaterial({color: jerseyHex, roughness: 0.55});
+				const shorts = new THREE.MeshStandardMaterial({color: shortsHex, roughness: 0.6});
+				const helmetMat = new THREE.MeshStandardMaterial({color: jerseyHex, roughness: 0.4, metalness: 0.1});
+
+				function makeWheel(z) {
+					const w = new THREE.Group(); // spun about local X to roll
+					const tire = new THREE.Mesh(cyclistWheelGeom, cyclistTireMat);
+					tire.rotation.y = Math.PI/2; // wheel plane -> YZ (hole faces X)
+					w.add(tire);
+					for(let k = 0; k < 3; k++) {
+						const s = new THREE.Mesh(cyclistSpokeGeom, cyclistMetalMat);
+						s.rotation.x = k*Math.PI/3;
+						w.add(s);
+					}
+					w.position.set(0, WHEEL_R, z);
+					return w;
+				}
+				const wheelF = makeWheel(-0.55), wheelB = makeWheel(0.55);
+				g.add(wheelF, wheelB);
+
+				// Frame triangle + fork + seat/handlebar posts.
+				const saddle = {x: 0, y: 0.72, z: 0.30}, bar = {x: 0, y: 0.78, z: -0.42};
+				g.add(connectTube(BB.x, BB.y, BB.z, saddle.x, saddle.y, saddle.z, 0.028, jersey));   // seat tube
+				g.add(connectTube(BB.x, BB.y, BB.z, bar.x, 0.5, -0.42, 0.028, cyclistMetalMat));      // down tube
+				g.add(connectTube(saddle.x, saddle.y, saddle.z, bar.x, bar.y, bar.z, 0.026, cyclistMetalMat)); // top tube
+				g.add(connectTube(bar.x, 0.5, -0.42, 0, WHEEL_R, -0.55, 0.024, cyclistMetalMat));     // fork
+				g.add(connectTube(BB.x, BB.y, BB.z, 0, WHEEL_R, 0.55, 0.024, cyclistMetalMat));       // chainstay
+				const barMesh = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.03, 0.03), cyclistMetalMat);
+				barMesh.position.set(0, bar.y, bar.z); g.add(barMesh);
+				const saddleMesh = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.05, 0.24), cyclistTireMat);
+				saddleMesh.position.set(0, saddle.y + 0.03, saddle.z); g.add(saddleMesh);
+
+				// Rider: hips, leaning torso, helmeted head, arms to the bars.
+				const hips = {x: 0, y: 0.86, z: 0.24};
+				const shoulders = {x: 0, y: 1.16, z: -0.12};
+				g.add(connectTube(hips.x, hips.y, hips.z, shoulders.x, shoulders.y, shoulders.z, 0.12, jersey)); // torso
+				const head = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), cyclistSkinMat);
+				head.position.set(0, 1.24, -0.26); g.add(head);
+				const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.135, 10, 8, 0, Math.PI*2, 0, Math.PI*0.62), helmetMat);
+				helmet.position.set(0, 1.26, -0.26); g.add(helmet);
+				[-1, 1].forEach(s => {
+					g.add(connectTube(s*0.11, shoulders.y, shoulders.z, s*0.14, bar.y + 0.02, bar.z, 0.03, jersey)); // arm
+				});
+
+				// Legs: a hip pivot group (thigh) with a knee pivot child (shin + foot).
+				// animate() drives hip/knee rotation.x sinusoidally to read as a pedal stroke.
+				function makeLeg(side) {
+					const hip = new THREE.Group();
+					hip.position.set(side*0.1, hips.y - 0.02, hips.z - 0.04);
+					const thigh = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.05, 0.34, 6), shorts);
+					thigh.position.y = -0.17; hip.add(thigh);
+					const knee = new THREE.Group();
+					knee.position.y = -0.34; hip.add(knee);
+					const shin = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.035, 0.34, 6), cyclistSkinMat);
+					shin.position.y = -0.17; knee.add(shin);
+					const foot = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.04, 0.16), cyclistTireMat);
+					foot.position.set(0, -0.34, -0.03); knee.add(foot);
+					g.add(hip);
+					return {hip, knee};
+				}
+				const legL = makeLeg(-1), legR = makeLeg(1);
+
+				// Cranks + pedals, spun about X at the bottom bracket.
+				const crank = new THREE.Group();
+				crank.position.set(BB.x, BB.y, BB.z);
+				[1, -1].forEach(s => {
+					const arm = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.17, 0.03), cyclistMetalMat);
+					arm.position.set(s*0.07, s*0.085, 0); crank.add(arm);
+					const pedal = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.03, 0.06), cyclistTireMat);
+					pedal.position.set(s*0.07, s*0.17, 0); crank.add(pedal);
+				});
+				g.add(crank);
+
+				return {group: g, wheelF, wheelB, crank, hipL: legL.hip, hipR: legR.hip, kneeL: legL.knee, kneeR: legR.knee, _phase: 0, _spin: 0};
+			}
+
+			// Drives one cyclist's wheels + pedal stroke. Uses real cadence when present,
+			// otherwise a plausible cadence derived from speed so the legs never freeze mid-roll.
+			function animateCyclist(cy, speedMS, cadenceRpm, dt) {
+				const rpm = (cadenceRpm && cadenceRpm > 0) ? cadenceRpm : (speedMS > 0.1 ? 68 : 0);
+				cy._phase += (rpm/60)*Math.PI*2*dt;
+				cy._spin += (speedMS/WHEEL_R)*dt;
+				const p = cy._phase, s = cy._spin;
+				cy.wheelF.rotation.x = s; cy.wheelB.rotation.x = s;
+				cy.crank.rotation.x = p;
+				cy.hipR.rotation.x = 0.35 + 0.5*Math.sin(p);
+				cy.kneeR.rotation.x = 0.95 - 0.9*Math.sin(p - 0.9);
+				cy.hipL.rotation.x = 0.35 + 0.5*Math.sin(p + Math.PI);
+				cy.kneeL.rotation.x = 0.95 - 0.9*Math.sin(p + Math.PI - 0.9);
+			}
+
+			// ---------- Player avatar + third-person chase camera ----------
+			// Zwift-style: your cyclist rides ahead, the camera floats behind and above,
+			// swinging around bends with the road. Constants tuned for the 62° FOV.
+			const CAM_BACK = 5.0;    // metres the camera sits behind the rider
+			const CAM_UP = 2.3;      // metres above the road/rider
+			const CAM_LOOK_UP = 1.1; // aim point height above the rider
+			const PROC_AVATAR_Z = 2.0; // where the avatar sits on the straight procedural road
+			const playerAvatar = buildCyclist(0xf4c430, 0x1b1f23); // amber jersey, matches app accent
+			scene.add(playerAvatar.group);
+
+			// Places the avatar on the route path at `distM` and parks the chase camera
+			// behind it along the road direction (floored above folded terrain). Shared by
+			// the riding and the still route-preview branches. Returns the rider position.
+			function driveRouteThirdPerson(distM, speedMS, bob, dt) {
+				const riderPos = pointAtDistance(routeCameraPath, distM);
+				const aheadPos = pointAtDistance(routeCameraPath, Math.min(distM + 5, routeCameraPath.totalLen));
+				let fx = aheadPos.x - riderPos.x, fy = (aheadPos.y || 0) - (riderPos.y || 0), fz = aheadPos.z - riderPos.z;
+				const fl = Math.hypot(fx, fz) || 1;
+				const nfx = fx/fl, nfz = fz/fl;
+				playerAvatar.group.visible = true;
+				playerAvatar.group.position.set(riderPos.x, riderPos.y || 0, riderPos.z);
+				playerAvatar.group.rotation.set(0, Math.atan2(-nfx, -nfz), 0);
+				animateCyclist(playerAvatar, speedMS, lastCadence, dt);
+				let cx = riderPos.x - nfx*CAM_BACK, cz = riderPos.z - nfz*CAM_BACK;
+				let cy = (riderPos.y || 0) - (fy/fl)*CAM_BACK + CAM_UP + bob*0.3;
+				const floorY = routeGroundFloorY(routeCameraPath, cx, cz);
+				if(isFinite(floorY)) cy = Math.max(cy, floorY + CAM_UP*0.6);
+				camera.position.set(cx, cy, cz);
+				camera.rotation.z = 0;
+				camera.lookAt(riderPos.x, (riderPos.y || 0) + CAM_LOOK_UP, riderPos.z);
+				return riderPos;
+			}
+
 			// ---------- Rival cyclist ----------
-			// Holds a steady pace; you catch up when you're pedalling harder. Kept
-			// procedural-mode only (like before) -- it's a single cheap entity, not
-			// the source of the slowdown, so no need to touch it.
+			// Holds a steady pace; you catch up when you're pedalling harder. Procedural
+			// mode only. Now shares the detailed cyclist model above.
 			const LANE_OFFSET = ROAD_WIDTH/4;
-			const rivalGroup = new THREE.Group();
-			const rivalFrame = new THREE.Mesh(
-				new THREE.BoxGeometry(0.08, 0.5, 1.1),
-				new THREE.MeshStandardMaterial({color: 0xdd4433, roughness: 0.5, metalness: 0.3})
-			);
-			rivalFrame.position.y = 0.75;
-			rivalFrame.rotation.x = 0.25;
-			const rivalWheelGeom = new THREE.TorusGeometry(0.35, 0.045, 6, 12);
-			const rivalWheelMat = new THREE.MeshStandardMaterial({color: 0x111111, roughness: 0.7});
-			const rivalWheelFront = new THREE.Mesh(rivalWheelGeom, rivalWheelMat);
-			rivalWheelFront.position.set(0, 0.35, -0.5);
-			const rivalWheelBack = new THREE.Mesh(rivalWheelGeom, rivalWheelMat);
-			rivalWheelBack.position.set(0, 0.35, 0.5);
-			const rivalRider = new THREE.Mesh(
-				new THREE.SphereGeometry(0.22, 8, 6),
-				new THREE.MeshStandardMaterial({color: 0x2255aa, roughness: 0.6})
-			);
-			rivalRider.position.set(0, 1.25, -0.1);
-			rivalGroup.add(rivalFrame, rivalWheelFront, rivalWheelBack, rivalRider);
+			const rival = buildCyclist(0xdd4433, 0x222226);
+			const rivalGroup = rival.group;
 			rivalGroup.position.set(-LANE_OFFSET, 0, -70);
 			scene.add(rivalGroup);
 			const RIVAL_OWN_SPEED = (13*1000/3600)*VISUAL_SCALE; // steady ~13km/h pace
@@ -1435,13 +1663,13 @@
 				if(baseGround.visible) {
 					baseGround.position.x = camera.position.x;
 					baseGround.position.z = camera.position.z;
-					baseGround.position.y = camera.position.y - BASE_CAM_Y - 0.15;
+					baseGround.position.y = camera.position.y - CAM_UP - 0.15;
 				}
 
 				// Distant mountain backdrop (alpine regions only) rides with the camera
 				// so it stays on the horizon -- a cheap silhouette, not real terrain.
 				if(mountainRange.visible) {
-					mountainRange.position.set(camera.position.x, camera.position.y - BASE_CAM_Y, camera.position.z);
+					mountainRange.position.set(camera.position.x, camera.position.y - CAM_UP, camera.position.z);
 				}
 
 				// Windmills keep turning even in the route preview (not just while
@@ -1477,7 +1705,7 @@
 					// Frozen entirely until a ride is active, and while paused.
 					if(isRiding && !isPaused){
 						rivalGroup.position.z += (visualSpeed - RIVAL_OWN_SPEED)*dt;
-						rivalGroup.children.forEach(c => { if(c.geometry && c.geometry.type === 'TorusGeometry') c.rotation.x += visualSpeed*dt*1.6; });
+						animateCyclist(rival, RIVAL_OWN_SPEED/VISUAL_SCALE, 66, dt);
 						if(rivalGroup.position.z > 15){
 							rivalGroup.position.z = -120 - Math.random()*40;
 						}
@@ -1486,7 +1714,7 @@
 
 
 				if(routeCameraPath && isRiding){
-					// Real route mode: camera tracks the same true `distanceKm` that
+					// Real route mode: the rider tracks the same true `distanceKm` that
 					// drives the 2D map marker, smoothed every frame (see smoothRouteDistM
 					// above) so it doesn't sit frozen between BLE notifications.
 					smoothRouteDistM += speedMS*dt;
@@ -1499,14 +1727,9 @@
 					if(routeTargetDistM > smoothRouteDistM) {
 						smoothRouteDistM += (routeTargetDistM - smoothRouteDistM)*Math.min(1, dt*2);
 					}
-					const distM = smoothRouteDistM;
-					const pos = pointAtDistance(routeCameraPath, distM);
-					const lookPos = pointAtDistance(routeCameraPath, distM + 12);
 					ride3dBobPhase += dt*(3.5 + visualSpeed*0.8);
 					const bobValue = Math.sin(ride3dBobPhase)*(0.022 + speedRatio*0.01);
-					camera.position.set(pos.x, (pos.y || 0) + BASE_CAM_Y + bobValue, pos.z);
-					camera.rotation.z = 0;
-					camera.lookAt(lookPos.x, (lookPos.y || 0) + BASE_CAM_Y*0.8, lookPos.z);
+					const riderPos = driveRouteThirdPerson(smoothRouteDistM, speedMS, bobValue, dt);
 
 					// Name the nearest placed real-world POI once you're close enough to
 					// actually be passing it, same "show while relevant" pattern as the
@@ -1514,7 +1737,7 @@
 					if(els.poiNameLabel) {
 						let nearest = null, nearestD = Infinity;
 						for(const p of placedPOIEntries) {
-							const dx = p.x - pos.x, dz = p.z - pos.z;
+							const dx = p.x - riderPos.x, dz = p.z - riderPos.z;
 							const d = Math.sqrt(dx*dx + dz*dz);
 							if(d < nearestD) { nearestD = d; nearest = p; }
 						}
@@ -1528,30 +1751,35 @@
 					}
 				}
 				else if(!routeCameraPath && visualSpeed > 0.05) {
-					// Straight procedural road: camera just stays centered -- only a
-					// small vertical bob for pedalling feel, no sideways movement at all.
-					ride3dBobPhase += dt*(3.5 + visualSpeed*0.8); // micro-vibrations + pedalling rhythm
+					// Straight procedural road: the avatar pedals centred ahead, the chase
+					// camera floats behind and above with a small bob for pedalling feel.
+					ride3dBobPhase += dt*(3.5 + visualSpeed*0.8);
 					const bobValue = Math.sin(ride3dBobPhase)*(0.022 + speedRatio*0.01);
 					const microVibration = (Math.random() - 0.5)*(speedRatio*0.009);
-					camera.position.y = BASE_CAM_Y + bobValue + microVibration;
-					camera.position.x = 0;
+					playerAvatar.group.visible = true;
+					playerAvatar.group.position.set(0, bobValue*0.5, PROC_AVATAR_Z);
+					playerAvatar.group.rotation.set(0, 0, 0);
+					animateCyclist(playerAvatar, speedMS, lastCadence, dt);
+					camera.position.set(0, CAM_UP + bobValue*0.4 + microVibration, PROC_AVATAR_Z + CAM_BACK);
 					camera.rotation.z = 0;
-					camera.lookAt(0, BASE_CAM_Y*0.8, -18);
+					camera.lookAt(0, CAM_LOOK_UP, PROC_AVATAR_Z - 10);
 					if(els.poiNameLabel) els.poiNameLabel.classList.remove('show');
 				}
 				else if(routeCameraPath && !isRiding){
-				smoothRouteDistM = 0;
-				const startPos = pointAtDistance(routeCameraPath, 0);
-				const lookPos = pointAtDistance(routeCameraPath, 12);
-				camera.position.set(startPos.x, (startPos.y || 0) + BASE_CAM_Y, startPos.z);
-				camera.rotation.z = 0;
-				camera.lookAt(lookPos.x, (lookPos.y || 0) + BASE_CAM_Y*0.8, lookPos.z);
-				if(els.poiNameLabel) els.poiNameLabel.classList.remove('show');
-			}
-			else if(!routeCameraPath) { // Return smoothly to standard idle positions when wheel stop tracking kicks in
-					camera.position.set(0, BASE_CAM_Y, 8);
+					// Route chosen but not yet riding: park the avatar at the start line
+					// with the chase camera already framing it.
+					smoothRouteDistM = 0;
+					driveRouteThirdPerson(0, 0, 0, dt);
+					if(els.poiNameLabel) els.poiNameLabel.classList.remove('show');
+				}
+				else if(!routeCameraPath) { // Idle procedural: avatar standing by, chase camera behind it.
+					playerAvatar.group.visible = true;
+					playerAvatar.group.position.set(0, 0, PROC_AVATAR_Z);
+					playerAvatar.group.rotation.set(0, 0, 0);
+					animateCyclist(playerAvatar, 0, 0, dt);
+					camera.position.set(0, CAM_UP, PROC_AVATAR_Z + CAM_BACK);
 					camera.rotation.z = 0;
-					camera.lookAt(0, BASE_CAM_Y*0.8, -18);
+					camera.lookAt(0, CAM_LOOK_UP, PROC_AVATAR_Z - 10);
 					if(els.poiNameLabel) els.poiNameLabel.classList.remove('show');
 				}
 				renderer.render(scene, camera);
