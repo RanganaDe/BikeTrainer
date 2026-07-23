@@ -75,13 +75,13 @@
 
 		.wrap {
 			max-width: 640px;
-			margin: 0 auto;
+			margin: 0 auto;/
 		}
 
 		.account-bar {
 			display: flex;
 			align-items: center;
-			justify-content: space-between;
+			justify-content: space-between;no
 			padding: 10px 14px;
 			background: var(--surface);
 			border: 1px solid var(--border);
@@ -519,6 +519,20 @@
 			color: var(--power);
 		}
 
+		/* Current-country flag, pinned top-centre (clear of the street name at top-left
+		   and the minimap/progress at top-right). Larger text so the flag emoji reads. */
+		.country-flag-label {
+			left: 50%;
+			right: auto;
+			transform: translateX(-50%);
+			top: 10px;
+			max-width: 45%;
+			font-size: 15px;
+			display: flex;
+			align-items: center;
+			gap: 6px;
+		}
+
 		.resistance-label {
 			top: auto;
 			bottom: 78px; /* clear the HUD bar pinned to the bottom */
@@ -603,6 +617,99 @@
 			border-color: rgba(120, 220, 120, 0.35);
 			color: #9be29b;
 			font-family: 'JetBrains Mono', monospace;
+		}
+
+		/* Every 500 m of the ride, an interesting fact about the surrounding area
+		   (nearest Wikipedia article) slides into this card. Wraps text (unlike the
+		   single-line pills) and auto-hides so it doesn't linger over the next stretch. */
+		.area-fact-panel {
+			position: absolute;
+			top: 44px;
+			left: 10px;
+			max-width: 56%;
+			display: flex;
+			align-items: flex-start;
+			gap: 10px;
+			padding: 9px 12px;
+			background: rgba(20, 23, 26, 0.82);
+			border: 1px solid rgba(180, 140, 255, 0.4);
+			border-radius: 10px;
+			box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+			color: var(--text);
+			text-align: left;
+			opacity: 0;
+			transform: translateY(-6px);
+			transition: opacity 0.3s ease, transform 0.3s ease;
+			pointer-events: none;
+			z-index: 3;
+		}
+
+		.area-fact-panel.show {
+			opacity: 1;
+			transform: none;
+		}
+
+		.area-fact-img {
+			flex: 0 0 auto;
+			width: 88px;
+			height: 88px;
+			object-fit: cover;
+			border-radius: 8px;
+			background: rgba(255, 255, 255, 0.05);
+			border: 1px solid rgba(255, 255, 255, 0.12);
+		}
+
+		/* Hidden (via JS) when the article has no thumbnail, so the card is text-only. */
+		.area-fact-img[hidden] { display: none; }
+
+		.area-fact-text {
+			min-width: 0; /* let the title ellipsis and body wrap inside the flex row */
+		}
+
+		.area-fact-title {
+			font-family: 'Space Grotesk', sans-serif;
+			font-size: 12px;
+			font-weight: 700;
+			color: #c9a8ff;
+			margin-bottom: 3px;
+			padding-right: 22px; /* clear the speaker toggle pinned top-right */
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		/* Mute/unmute the read-aloud. Sits above the panel (which is pointer-events:none)
+		   so it stays clickable. */
+		.area-fact-speak {
+			position: absolute;
+			top: 5px;
+			right: 5px;
+			width: 26px;
+			height: 26px;
+			padding: 0;
+			font-size: 13px;
+			line-height: 1;
+			border-radius: 7px;
+			border: 1px solid rgba(255, 255, 255, 0.14);
+			background: rgba(255, 255, 255, 0.06);
+			pointer-events: auto;
+			cursor: pointer;
+		}
+
+		.area-fact-speak:hover {
+			border-color: rgba(180, 140, 255, 0.6);
+		}
+
+		.area-fact-body {
+			font-family: 'Space Grotesk', sans-serif;
+			font-size: 12px;
+			font-weight: 500;
+			line-height: 1.4;
+			color: var(--text);
+		}
+
+		@media (max-width: 520px) {
+			.area-fact-panel { max-width: 60%; font-size: 11px; }
 		}
 
 		.minimap-wrap {
@@ -1005,9 +1112,18 @@
 		<div class="ride3d-canvas-wrap">
 			<div id="ride3dCanvas"></div>
 			<div id="streetNameLabel" class="street-name-label"></div>
+			<div id="countryFlagLabel" class="street-name-label country-flag-label"></div>
 			<div id="poiNameLabel" class="street-name-label poi-name-label"></div>
 			<div id="resistanceSuggestLabel" class="street-name-label resistance-label"></div>
 			<div id="rideProgressLabel" class="street-name-label progress-label"></div>
+			<div id="areaFactPanel" class="area-fact-panel">
+				<img id="areaFactImg" class="area-fact-img" alt="">
+				<div class="area-fact-text">
+					<div id="areaFactTitle" class="area-fact-title"></div>
+					<div id="areaFactBody" class="area-fact-body"></div>
+				</div>
+				<button id="areaFactSpeak" class="area-fact-speak" type="button" title="Read facts aloud" aria-label="Toggle reading facts aloud">🔊</button>
+			</div>
 			<div id="miniMapWrap" class="minimap-wrap"><div id="miniMap" style="position:absolute; width:170%; height:170%; left:-35%; top:-35%; transform-origin:50% 50%;"></div></div>
 			<div class="ride-hud" id="rideHud">
 				<div class="hud-tile"><div class="hud-value power" id="hudPower">–</div><div class="hud-unit">watts</div></div>

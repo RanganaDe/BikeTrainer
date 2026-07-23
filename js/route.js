@@ -12,9 +12,76 @@
 		let followRider = true;
 		let routeFromLabel = '', routeToLabel = '';
 		let routeStreetSegments = []; // [{name, fromKm, toKm}, ...] built from OSRM's turn-by-turn steps
+		let routeCountrySegments = []; // [{fromKm, cc, name}, ...] country along the route (border-aware, see buildCountryTimeline)
 		let routePOIs = []; // [{lat, lng, kind, name}, ...] fetched from OpenStreetMap via Overpass
 		let routeElevationKm = []; // cumulative km at each elevation sample -- parallel to routeElevationM
 		let routeElevationM = []; // elevation in metres at each sample, from Open-Elevation
+
+		// Every 500 m of the ride we surface an interesting fact about the surrounding
+		// area (nearest Wikipedia article) in the ride-view fact panel. Milestone index
+		// = floor(km / 0.5); we fire when it advances so each 500 m mark fires once.
+		const FACT_INTERVAL_KM = 0.5;
+		let lastFactMilestone = -1;      // highest 500 m milestone already surfaced
+		let shownFactTitles = new Set(); // article titles already shown, so we don't repeat
+		let areaFactHideTimer = null;    // auto-hide timer for the fact panel
+
+		// The fact panel can also read its text aloud (Web Speech API). Default on;
+		// muting persists so the choice sticks across rides. Speech needs a prior user
+		// gesture to start, which the ride's Start/Simulate button already provides.
+		const ttsSupported = typeof window !== 'undefined' && 'speechSynthesis' in window;
+		let factTtsEnabled = ttsSupported && localStorage.getItem('bt_fact_tts') !== '0';
+		let ttsVoice = null; // best available English voice, chosen by pickBestVoice()
+
+		// The default OS voice is often a robotic legacy one (macOS "Samantha", etc.).
+		// Score every installed voice and keep the best English one: natural/neural
+		// engines and Chrome's "Google" network voices sound far better; novelty macOS
+		// voices ("Albert", "Zarvox", ...) are pushed to the bottom.
+		function pickBestVoice() {
+			if(!ttsSupported) return;
+			const voices = window.speechSynthesis.getVoices() || [];
+			if(!voices.length) return; // not loaded yet; onvoiceschanged will call us again
+			let best = null, bestScore = -Infinity;
+			for(const v of voices) {
+				const n = `${v.name} ${v.voiceURI}`.toLowerCase();
+				const lang = (v.lang || '').toLowerCase();
+				let s = 0;
+				if(lang.startsWith('en')) s += 20;
+				if(lang === 'en-us' || lang === 'en_us') s += 6;
+				if(/natural|neural|enhanced|premium/.test(n)) s += 45; // Edge/Win + macOS enhanced
+				if(n.includes('google')) s += 40;                      // Chrome natural network voices
+				if(/samantha|ava|allison|serena|siri|zoe|karen|moira|tessa|aria|jenny|libby|nora/.test(n)) s += 25;
+				if(!v.localService) s += 8;                            // network voices tend to be higher quality
+				if(/albert|fred|zarvox|trinoids|cellos|organ|bells|bad news|good news|bahh|boing|bubbles|deranged|hysterical|jester|junior|kathy|pipe|ralph|whisper|wobble|superstar|novelty/.test(n)) s -= 60;
+				if(s > bestScore) { bestScore = s; best = v; }
+			}
+			ttsVoice = best;
+		}
+
+		if(ttsSupported) {
+			pickBestVoice();
+			// Voice list often loads asynchronously (empty on first getVoices()).
+			window.speechSynthesis.onvoiceschanged = pickBestVoice;
+		}
+
+		function speakFact(text) {
+			if(!ttsSupported || !factTtsEnabled) return;
+			try {
+				window.speechSynthesis.cancel(); // drop any still-playing previous fact
+				if(!ttsVoice) pickBestVoice();   // last chance if voices only just loaded
+				const u = new SpeechSynthesisUtterance(text);
+				if(ttsVoice) u.voice = ttsVoice;
+				u.lang = (ttsVoice && ttsVoice.lang) || 'en-US';
+				u.rate = 0.97;  // a touch slower reads more naturally than the default
+				u.pitch = 1.0;
+				window.speechSynthesis.speak(u);
+			} catch(e) {
+				console.warn('Could not read fact aloud:', e.message); // non-critical
+			}
+		}
+
+		function stopSpeakingFact() {
+			if(ttsSupported) { try { window.speechSynthesis.cancel(); } catch(e) {} }
+		}
 
 		// Bridged into by init3D() once it runs, so findRoute() (defined here, outside
 		// the 3D closure) can hand real route coordinates to the 3D scene.
@@ -26,6 +93,7 @@
 
 		let region = null; // detected geographic region profile for the active route (see route-region.js)
 		let routeTerrain = null; // sampled surrounding-terrain heightfield for the active route (see fetchRouteTerrain)
+		let routeLandcover = null; // {forest, farmland, arid, water} OSM counts, refines the region biome (see fetchRouteLandcover)
 
 		function haversineKm(a, b) {
 			const R = 6371;
@@ -169,6 +237,69 @@
 			}
 
 			return elements.map(overpassElementToPOI).filter(Boolean);
+		}
+
+		// ---------- landcover mix (OpenStreetMap via Overpass) ----------
+		// Feeds detectRegion() so the biome reflects what actually surrounds THIS road
+		// -- forest vs farmland vs desert -- instead of a hardcoded country. Uses
+		// Overpass `out count`, which returns only tallies (no geometry), so it stays a
+		// sub-second request even over a big bbox and can't 504 the way the old
+		// building-footprint pull did. Result is cached per route like the elevation.
+		async function fetchLandcoverRequest(bboxStr) {
+			// Each union sets the `_` set; each `out count` reports that set's totals.
+			// The counts come back in this exact order: forest, farmland, arid, water.
+			const query = `[out:json][timeout:25];
+				(way["natural"="wood"](${bboxStr});way["landuse"="forest"](${bboxStr}););out count;
+				(way["landuse"~"^(farmland|meadow|orchard|vineyard|farmyard|grass)$"](${bboxStr}););out count;
+				(way["natural"~"^(desert|sand|scree|bare_rock|dune)$"](${bboxStr});way["landuse"="quarry"](${bboxStr}););out count;
+				(way["natural"="water"](${bboxStr});way["landuse"="reservoir"](${bboxStr}););out count;`;
+
+			let lastErr;
+			for(const endpoint of OVERPASS_ENDPOINTS) {
+				try {
+					const res = await fetch(endpoint, {method: 'POST', body: 'data=' + encodeURIComponent(query)});
+					if(!res.ok) {
+						const err = new Error(`Overpass landcover failed (${res.status})`);
+						const retryAfter = Number(res.headers.get('Retry-After'));
+						if(!Number.isNaN(retryAfter)) err.retryAfterMs = retryAfter*1000;
+						throw err;
+					}
+					const data = await res.json();
+					const counts = (data.elements || [])
+						.filter(e => e.type === 'count')
+						.map(e => Number((e.tags && (e.tags.total ?? e.tags.ways)) || 0));
+					return {forest: counts[0] || 0, farmland: counts[1] || 0, arid: counts[2] || 0, water: counts[3] || 0};
+				} catch(e) {
+					lastErr = e;
+					console.warn(`Overpass landcover mirror failed (${endpoint}): ${e.message}`);
+				}
+			}
+			throw lastErr || new Error('All Overpass mirrors failed');
+		}
+
+		async function fetchRouteLandcover(coords) {
+			const sig = routeSignature();
+			const cached = elevCacheGet('landcover', sig);
+			if(cached) return cached;
+
+			const bbox = routeBBoxPadded(coords, 120);
+			const bboxStr = `${bbox.south},${bbox.west},${bbox.north},${bbox.east}`;
+			let counts;
+			try {
+				counts = await fetchLandcoverRequest(bboxStr);
+			} catch(e) {
+				const delay = e.retryAfterMs || 5000;
+				console.error(`Overpass landcover failed, waiting ${delay}ms before retrying:`, e);
+				await sleep(delay);
+				try {
+					counts = await fetchLandcoverRequest(bboxStr);
+				} catch(e2) {
+					logEvent('route', `Could not load landcover from OpenStreetMap (Overpass may be busy): ${e2.message}`);
+					return null; // detectRegion falls back to climate + elevation only
+				}
+			}
+			elevCacheSet('landcover', sig, counts);
+			return counts;
 		}
 
 		// ---------- road elevation (Open-Elevation) ----------
@@ -429,6 +560,92 @@
 			return {lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), label: data[0].display_name};
 		}
 
+		// ---------- country flag (border-aware) ----------
+		// A 2-letter ISO country code -> its flag emoji (regional-indicator letters).
+		// Renders as a real flag on iOS/Android/macOS; on platforms without flag glyphs
+		// the code is shown alongside as a fallback (see updateCountryFlag).
+		function countryCodeToFlag(cc) {
+			if(!cc || cc.length !== 2) return '';
+			const A = 0x1F1E6, base = 'A'.charCodeAt(0);
+			return String.fromCodePoint(A + cc.toUpperCase().charCodeAt(0) - base) +
+			       String.fromCodePoint(A + cc.toUpperCase().charCodeAt(1) - base);
+		}
+
+		// Nominatim asks for <=1 request/second, so every reverse-geocode is funnelled
+		// through one promise chain with a gap between calls (same pattern as the
+		// Open-Meteo throttle). Country lookups are few and cached per route, so this
+		// stays polite even when a route crosses a border.
+		let nominatimChain = Promise.resolve();
+		const NOMINATIM_GAP_MS = 1100;
+		function throttledReverse(lat, lng) {
+			const run = async () => {
+				const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=3&addressdetails=1&lat=${lat}&lon=${lng}`);
+				if(!res.ok) throw new Error(`reverse geocode HTTP ${res.status}`);
+				const d = await res.json();
+				const a = d.address || {};
+				return a.country_code ? {cc: a.country_code, name: a.country || a.country_code.toUpperCase()} : null;
+			};
+			const result = nominatimChain.then(run, run);
+			nominatimChain = result.then(() => sleep(NOMINATIM_GAP_MS), () => sleep(NOMINATIM_GAP_MS));
+			return result;
+		}
+
+		// Builds routeCountrySegments: the country at each stretch of the route, so the
+		// flag can switch as you cross a border mid-ride. Reverse-geocodes a few points
+		// along the route (cheap common case: start/mid/end are the same country -> 3
+		// calls, one segment). Only when they differ do we sample the quarter points too,
+		// to place the crossing more precisely. Cached per route so re-rides cost nothing.
+		async function buildCountryTimeline(coords, myRun) {
+			const sig = routeSignature();
+			const cached = elevCacheGet('country', sig);
+			if(cached) return cached;
+
+			async function sampleAt(frac) {
+				const p = latLngAtKm(routeTotalKm*frac);
+				try { const c = await throttledReverse(p.lat.toFixed(4), p.lng.toFixed(4)); return c ? {km: routeTotalKm*frac, ...c} : null; }
+				catch(e) { return null; }
+			}
+
+			let fracs = [0, 0.5, 1];
+			let samples = (await Promise.all(fracs.map(sampleAt))).filter(Boolean);
+			if(myRun !== routeGeneration) return null; // a newer route superseded this one
+			// If the endpoints/midpoint span more than one country, densify to pin the crossing.
+			if(new Set(samples.map(s => s.cc)).size > 1) {
+				const extra = (await Promise.all([0.25, 0.75].map(sampleAt))).filter(Boolean);
+				if(myRun !== routeGeneration) return null;
+				samples = samples.concat(extra);
+			}
+			samples.sort((a, b) => a.km - b.km);
+			if(!samples.length) return [];
+
+			// Collapse consecutive same-country samples into segments; a border sits at the
+			// midpoint between two differing samples.
+			const segs = [{fromKm: 0, cc: samples[0].cc, name: samples[0].name}];
+			for(let i = 1; i < samples.length; i++) {
+				if(samples[i].cc !== segs[segs.length - 1].cc) {
+					segs.push({fromKm: (samples[i - 1].km + samples[i].km)/2, cc: samples[i].cc, name: samples[i].name});
+				}
+			}
+			elevCacheSet('country', sig, segs);
+			return segs;
+		}
+
+		function countryAtKm(km) {
+			if(!routeCountrySegments.length) return null;
+			let cur = routeCountrySegments[0];
+			for(const s of routeCountrySegments) { if(km >= s.fromKm) cur = s; else break; }
+			return cur;
+		}
+
+		function updateCountryFlag(km) {
+			if(!els.countryFlagLabel) return;
+			const c = countryAtKm(km);
+			if(!c) { els.countryFlagLabel.classList.remove('show'); return; }
+			const flag = countryCodeToFlag(c.cc);
+			els.countryFlagLabel.textContent = flag ? `${flag} ${c.name}` : c.name;
+			els.countryFlagLabel.classList.add('show');
+		}
+
 		async function findRoute() {
 			const fromQ = els.routeFrom.value.trim();
 			const toQ = els.routeTo.value.trim();
@@ -467,6 +684,12 @@
 				}
 				routeTotalKm = routeCumDist[routeCumDist.length - 1];
 				routeActive = true;
+				// Reset the 500 m fact milestones for this fresh route.
+				lastFactMilestone = -1;
+				shownFactTitles = new Set();
+				clearTimeout(areaFactHideTimer);
+				stopSpeakingFact();
+				if(els.areaFactPanel) els.areaFactPanel.classList.remove('show');
 				routeFromLabel = fromQ;
 				routeToLabel = toQ;
 
@@ -508,6 +731,39 @@
 					console.error('Could not fetch nearby places:', err);
 				});
 
+				// Non-blocking landcover: refines the biome (forest/farmland/arid) once it
+				// lands, re-detecting with whatever elevation has arrived so far and
+				// rebuilding the scene. Failure just leaves the climate+elevation guess.
+				routeLandcover = null;
+				fetchRouteLandcover(coords).then(landcover => {
+					if(myRun !== routeGeneration || !landcover) return; // stale route, or Overpass gave up
+					routeLandcover = landcover;
+					const elevProfile = routeElevationM.length ? {elevM: routeElevationM} : null;
+					region = detectRegion(routeCoords, elevProfile, landcover);
+					if(apply3DRegion) apply3DRegion(region);
+					if(build3DRoute) build3DRoute(routeCoords); // rebuild picks up the new palette/scenery mix
+					if(place3DPOIs) place3DPOIs(routePOIs);
+					if(apply3DTerrain && routeTerrain) apply3DTerrain(routeTerrain);
+					logEvent('route', `landcover: ${landcover.forest} forest · ${landcover.farmland} farm · ${landcover.arid} arid · ${landcover.water} water → ${region.label}`);
+				}).catch(err => {
+					console.error('Could not fetch landcover:', err);
+				});
+
+				// Non-blocking country flag: figure out which country/countries the route
+				// runs through, then show the flag (and switch it live when the ride crosses
+				// a border -- see updateCountryFlag in updateRouteProgress).
+				routeCountrySegments = [];
+				if(els.countryFlagLabel) els.countryFlagLabel.classList.remove('show');
+				buildCountryTimeline(coords, myRun).then(segs => {
+					if(myRun !== routeGeneration || !segs || !segs.length) return;
+					routeCountrySegments = segs;
+					updateCountryFlag(Math.min(distanceKm, routeTotalKm));
+					const names = segs.map(s => `${countryCodeToFlag(s.cc)} ${s.name}`).join(' → ');
+					logEvent('route', `country: ${names}`);
+				}).catch(err => {
+					console.error('Could not determine route country:', err);
+				});
+
 				// Same non-blocking treatment for elevation -- the resistance suggestion
 				// is a nice-to-have, not something "route ready" should wait on.
 				routeElevationKm = [];
@@ -522,7 +778,7 @@
 					// the bbox guess), then rebuild the ribbon so it lifts from flat
 					// into true 3D relief -- build3DRoute reads the elevation globals we
 					// just populated. POIs are re-placed onto the new elevated path.
-					region = detectRegion(routeCoords, profile);
+					region = detectRegion(routeCoords, profile, routeLandcover);
 					if(apply3DRegion) apply3DRegion(region);
 					if(build3DRoute) build3DRoute(routeCoords);
 					if(place3DPOIs) place3DPOIs(routePOIs);
@@ -604,10 +860,16 @@
 				routeElevationM = [];
 				region = null;
 				routeTerrain = null;
+				routeLandcover = null;
+				routeCountrySegments = [];
+				if(els.countryFlagLabel) els.countryFlagLabel.classList.remove('show');
 				if(els.streetNameLabel) els.streetNameLabel.classList.remove('show');
 				if(els.resistanceSuggestLabel) els.resistanceSuggestLabel.classList.remove('show');
 				if(els.miniMapWrap) els.miniMapWrap.classList.remove('show');
 				if(els.rideProgressLabel) els.rideProgressLabel.classList.remove('show');
+				clearTimeout(areaFactHideTimer);
+				stopSpeakingFact();
+				if(els.areaFactPanel) els.areaFactPanel.classList.remove('show');
 				if(clear3DRoute) clear3DRoute();
 				if(apply3DRegion) apply3DRegion(null); // restore generic palette/scenery, hide mountains
 				if(apply3DTerrain) apply3DTerrain(null); // remove any surrounding terrain
@@ -687,6 +949,75 @@
 			return 7;
 		}
 
+		// ---------- roadside "interesting fact" (Wikipedia GeoSearch) ----------
+		// One request pulls the nearest geolocated articles AND their intro extracts
+		// (generator=geosearch + prop=extracts), so a milestone costs a single fetch.
+		// Wikipedia's action API needs origin=* for anonymous CORS.
+		async function fetchAreaFacts(lat, lng) {
+			const url = 'https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*'
+				+ '&generator=geosearch&ggslimit=8&ggsradius=10000'
+				+ `&ggscoord=${lat}%7C${lng}`
+				+ '&prop=extracts%7Cpageimages&exintro=1&explaintext=1&exsentences=3&exlimit=8'
+				+ '&piprop=thumbnail&pithumbsize=160'; // small article photo, same call
+			const res = await fetch(url);
+			if(!res.ok) throw new Error(`Wikipedia GeoSearch failed (${res.status})`);
+			const data = await res.json();
+			const pages = data && data.query && data.query.pages;
+			if(!pages) return [];
+			// geosearch orders results by distance; each page carries that order in `index`.
+			return Object.values(pages)
+				.filter(p => p.extract && p.extract.trim().length > 20)
+				.sort((a, b) => (a.index || 0) - (b.index || 0));
+		}
+
+		async function showAreaFactAt(lat, lng, myRun) {
+			if(!els.areaFactPanel) return;
+			let list;
+			try {
+				list = await fetchAreaFacts(lat, lng);
+			} catch(e) {
+				console.warn('Could not fetch area fact:', e.message); // non-critical, skip this milestone
+				return;
+			}
+			if(myRun !== routeGeneration) return; // route was superseded/cleared while fetching
+			if(!list || !list.length) return;
+
+			// Prefer the nearest article we haven't shown yet; fall back to the nearest.
+			const pick = list.find(p => !shownFactTitles.has(p.title)) || list[0];
+			shownFactTitles.add(pick.title);
+
+			let text = pick.extract.replace(/\s+/g, ' ').trim();
+			// Only trim runaway extracts; the panel wraps freely, so keep whole sentences.
+			if(text.length > 400) text = text.slice(0, 397).replace(/\s+\S*$/, '') + '…';
+
+			els.areaFactTitle.textContent = `💡 ${pick.title}`;
+			els.areaFactBody.textContent = text;
+
+			// Show the article's thumbnail if it has one; hide the <img> otherwise so the
+			// card falls back to text-only. onerror also hides it if the image 404s.
+			if(els.areaFactImg) {
+				const thumb = pick.thumbnail && pick.thumbnail.source;
+				if(thumb) {
+					els.areaFactImg.onerror = () => { els.areaFactImg.hidden = true; };
+					els.areaFactImg.src = thumb;
+					els.areaFactImg.hidden = false;
+				} else {
+					els.areaFactImg.removeAttribute('src');
+					els.areaFactImg.hidden = true;
+				}
+			}
+
+			els.areaFactPanel.classList.add('show');
+			speakFact(`${pick.title}. ${text}`); // read the fact aloud (unless muted)
+
+			// Auto-hide so the card doesn't sit over the whole next stretch; the next
+			// milestone (or a manual clear) supersedes it anyway.
+			clearTimeout(areaFactHideTimer);
+			areaFactHideTimer = setTimeout(() => {
+				if(els.areaFactPanel) els.areaFactPanel.classList.remove('show');
+			}, 22000);
+		}
+
 		function updateRouteProgress(coveredKm) {
 			if(!routeActive || routeCoords.length === 0) return;
 			const clamped = Math.min(coveredKm, routeTotalKm);
@@ -720,6 +1051,8 @@
 				}
 			}
 
+			updateCountryFlag(clamped); // switches the flag when the ride crosses a border
+
 			if(els.resistanceSuggestLabel){
 				const grade = gradePercentAtKm(clamped);
 				if(grade != null){
@@ -745,9 +1078,33 @@
 					: `${clamped.toFixed(2)} / ${routeTotalKm.toFixed(1)} km · ${pct.toFixed(0)}%`;
 				els.rideProgressLabel.classList.add('show');
 			}
+
+			// Every completed 500 m, surface an interesting fact about the area here.
+			// milestone 0 (the start line) is skipped so the first fact lands at 500 m.
+			const milestone = Math.floor(clamped / FACT_INTERVAL_KM);
+			if(milestone >= 1 && milestone > lastFactMilestone) {
+				lastFactMilestone = milestone;
+				showAreaFactAt(lat, lng, routeGeneration);
+			}
 		}
 
 		els.findRouteBtn.addEventListener('click', findRoute);
 		els.followToggle.addEventListener('change', () => {
 			followRider = els.followToggle.checked;
 		});
+
+		// Speaker toggle on the fact panel: mute/unmute the read-aloud. Hidden entirely
+		// on browsers without speech synthesis.
+		if(els.areaFactSpeak) {
+			if(!ttsSupported) {
+				els.areaFactSpeak.style.display = 'none';
+			} else {
+				els.areaFactSpeak.textContent = factTtsEnabled ? '🔊' : '🔇';
+				els.areaFactSpeak.addEventListener('click', () => {
+					factTtsEnabled = !factTtsEnabled;
+					localStorage.setItem('bt_fact_tts', factTtsEnabled ? '1' : '0');
+					els.areaFactSpeak.textContent = factTtsEnabled ? '🔊' : '🔇';
+					if(!factTtsEnabled) stopSpeakingFact(); // silence the current readout at once
+				});
+			}
+		}

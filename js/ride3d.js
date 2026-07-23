@@ -1263,6 +1263,7 @@
 				}
 
 				const ROAD_BED_M = 30, RAMP_TO_M = 200; // flat bench across the road, full DEM by ~200m out
+				const TERRAIN_CAP_KNEE = 20, TERRAIN_CAP_SOFT = 16; // above +20m over the road, compress; asymptote ~+36m
 				const totalLen = path ? path.totalLen : 0;
 				const STEP = Math.max(12, totalLen/800);           // fine rows that follow the road; capped to ~800 rows
 				const rows = path ? Math.max(2, Math.floor(totalLen/STEP) + 1) : 0;
@@ -1274,12 +1275,20 @@
 				// level, so terrain never rises over the road -- which was letting the camera
 				// end up under the (double-sided) terrain and see its green underside as sky.
 				const rpts = path ? path.points : [];
+				const rhs = path ? path.heights : [];
 				const stride = Math.max(1, Math.floor(rpts.length/200));
 				const poly = [];
-				for(let k = 0; k < rpts.length; k += stride) poly.push(rpts[k]);
-				if(rpts.length) poly.push(rpts[rpts.length - 1]);
-				function distToRoute(x, z) {
-					let best = Infinity;
+				for(let k = 0; k < rpts.length; k += stride) poly.push({x: rpts[k].x, z: rpts[k].z, h: (rhs[k] || 0)});
+				if(rpts.length) { const k = rpts.length - 1; poly.push({x: rpts[k].x, z: rpts[k].z, h: (rhs[k] || 0)}); }
+				// Nearest point on the route to (x,z): returns the distance AND the road height
+				// there. The height matters on hairpins -- a terrain vertex sitting over the LOWER
+				// limb is nearest to that lower limb, so it gets pulled down to the lower limb's
+				// height instead of keeping its own (upper) row's height and blanketing the road
+				// below it (the "green valley comes over the road" bug). On a straight road the
+				// nearest point is ~the current row, so nothing changes there.
+				const FLOOR_RADIUS2 = 45*45; // road points within ~45m vote on the local floor height
+				function nearestRoad(x, z) {
+					let best = Infinity, bestH = 0, minH = Infinity;
 					for(let j = 0; j < poly.length - 1; j++) {
 						const a = poly[j], b = poly[j + 1];
 						const abx = b.x - a.x, abz = b.z - a.z;
@@ -1287,9 +1296,14 @@
 						let t = ((x - a.x)*abx + (z - a.z)*abz)/l2; t = Math.max(0, Math.min(1, t));
 						const cx = a.x + abx*t, cz = a.z + abz*t;
 						const dd = (x - cx)**2 + (z - cz)**2;
-						if(dd < best) best = dd;
+						const hh = a.h + (b.h - a.h)*t;
+						if(dd < best) { best = dd; bestH = hh; }
+						// Lowest road within radius, so where an upper switchback limb passes over
+						// a lower one, the terrain floor drops to the LOWER limb -- the upper limb's
+						// bench can't hang over the road below it.
+						if(dd < FLOOR_RADIUS2 && hh < minH) minH = hh;
 					}
-					return Math.sqrt(best);
+					return { dist: Math.sqrt(best), h: bestH, floorH: (minH === Infinity ? bestH : minH) };
 				}
 
 				const positions = [], colors = [];
@@ -1301,13 +1315,22 @@
 					let dx = p1.x - p0.x, dz = p1.z - p0.z;
 					const len = Math.sqrt(dx*dx + dz*dz) || 1;
 					const perpX = -dz/len, perpZ = dx/len;
-					const roadH = p0.y || 0;                        // ACTUAL road height at this row
 					for(let c = 0; c < cols; c++) {
 						const off = colOffset(c);
 						const vx = p0.x + perpX*off, vz = p0.z + perpZ*off;
 						const demH = (demElevAt(f, c) - base)*scale;
-						const w = smooth(ROAD_BED_M, RAMP_TO_M, distToRoute(vx, vz)); // true distance -> fold-safe
-						const y = roadH*(1 - w) + demH*w;
+						const near = nearestRoad(vx, vz);               // fold-safe: dist + local floor height
+						const roadH = near.floorH;                      // lowest nearby limb -> never overhang a road below
+						const w = smooth(ROAD_BED_M, RAMP_TO_M, near.dist);
+						let y = roadH*(1 - w) + demH*w;
+						// Soft-cap how far terrain rises ABOVE the road. Real steep-valley walls
+						// (e.g. Grindelwald) otherwise fill the low chase-cam frame as a green
+						// slab; compressing the upper metres keeps rolling relief while letting
+						// the sky show above the ridgeline. Downhill/valley terrain is untouched.
+						const relAbove = y - roadH;
+						if(relAbove > TERRAIN_CAP_KNEE) {
+							y = roadH + TERRAIN_CAP_KNEE + TERRAIN_CAP_SOFT*(1 - Math.exp(-(relAbove - TERRAIN_CAP_KNEE)/TERRAIN_CAP_SOFT));
+						}
 						positions.push(vx, y, vz);
 
 						const relM = (y - roadH)/scale;               // metres this vertex rises above the valley floor
@@ -1361,15 +1384,15 @@
 			// light at night with the lamp posts actually glowing. Keyframes are
 			// interpolated between, not snapped, so there's no jarring jump.
 			const timeKeyframes = [
-				{h: 0,    skyTop:'#16224a', skyMid:'#243a68', skyHorizon:'#324a76', sun:'#8fa8ff', sunI:0.45, hemiSky:'#3a5080', hemiGround:'#1c3324', hemiI:0.62, elev:-10, lamp:2.2},
-				{h: 5,    skyTop:'#1c2c54', skyMid:'#2c4270', skyHorizon:'#3c4a7c', sun:'#9ab0e0', sunI:0.48, hemiSky:'#3f5888', hemiGround:'#22392c', hemiI:0.65, elev:-5,  lamp:2.0},
+				{h: 0,    skyTop:'#1a2a56', skyMid:'#2e4076', skyHorizon:'#4c5e92', sun:'#9fb4ff', sunI:0.6,  hemiSky:'#54689a', hemiGround:'#263a2e', hemiI:0.78, elev:-10, lamp:2.0},
+				{h: 5,    skyTop:'#203258', skyMid:'#324a7c', skyHorizon:'#56679c', sun:'#a6bce8', sunI:0.62, hemiSky:'#5a6ea0', hemiGround:'#2a3f34', hemiI:0.78, elev:-5,  lamp:1.9},
 				{h: 6.5,  skyTop:'#3a5a8c', skyMid:'#a878a0', skyHorizon:'#f4a463', sun:'#ffb37a', sunI:0.72, hemiSky:'#8894b8', hemiGround:'#3a2c22', hemiI:0.72, elev:6,   lamp:1.1},
 				{h: 9,    skyTop:'#4f8fd6', skyMid:'#a9d4ec', skyHorizon:'#ffe0b0', sun:'#fff0d0', sunI:1.05, hemiSky:'#a9d4ec', hemiGround:'#4d6e43', hemiI:0.95, elev:35,  lamp:0.15},
 				{h: 13,   skyTop:'#3f7fd0', skyMid:'#a9d4ec', skyHorizon:'#dcedf5', sun:'#ffffff', sunI:1.25, hemiSky:'#ffffff', hemiGround:'#4d6e43', hemiI:1.0,  elev:70,  lamp:0.05},
 				{h: 17,   skyTop:'#4f8fd6', skyMid:'#c3d9ea', skyHorizon:'#f5dcc0', sun:'#ffe8c0', sunI:1.1,  hemiSky:'#b8c8dc', hemiGround:'#4d5e38', hemiI:0.9,  elev:40,  lamp:0.1},
-				{h: 19,   skyTop:'#2a3a6a', skyMid:'#a85a5a', skyHorizon:'#ff8a4c', sun:'#ff8a4c', sunI:0.62, hemiSky:'#5a6a98', hemiGround:'#3a2c1e', hemiI:0.55, elev:8,   lamp:1.0},
-				{h: 21,   skyTop:'#1c2848', skyMid:'#2c2f5c', skyHorizon:'#3c3e70', sun:'#8a7aa8', sunI:0.46, hemiSky:'#3a4270', hemiGround:'#1a2824', hemiI:0.6,  elev:-8,  lamp:1.9},
-				{h: 24,   skyTop:'#16224a', skyMid:'#243a68', skyHorizon:'#324a76', sun:'#8fa8ff', sunI:0.45, hemiSky:'#3a5080', hemiGround:'#1c3324', hemiI:0.62, elev:-10, lamp:2.2}
+				{h: 19,   skyTop:'#3a4f86', skyMid:'#b06a6a', skyHorizon:'#ff9a58', sun:'#ffb37a', sunI:0.9,  hemiSky:'#8496c4', hemiGround:'#43362a', hemiI:0.82, elev:9,   lamp:0.9},
+				{h: 21,   skyTop:'#22315e', skyMid:'#3a4074', skyHorizon:'#66739f', sun:'#a6b0e0', sunI:0.7,  hemiSky:'#5f6ea6', hemiGround:'#2a3a44', hemiI:0.82, elev:-6,  lamp:1.6},
+				{h: 24,   skyTop:'#1a2a56', skyMid:'#2e4076', skyHorizon:'#4c5e92', sun:'#9fb4ff', sunI:0.6,  hemiSky:'#54689a', hemiGround:'#263a2e', hemiI:0.78, elev:-10, lamp:2.0}
 			];
 
 			function lerp(a, b, t){ return a + (b - a)*t; }
