@@ -1,0 +1,7 @@
+# Node deps for the smoke test only (the app itself is build-free)
+test/node_modules/
+# Local ride recordings
+recordings/
+# Editor
+.idea/
+.DS_Store
