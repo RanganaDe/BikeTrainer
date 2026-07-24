@@ -761,7 +761,7 @@
 				const mPerLng = 111320*Math.cos(refLat);
 				const roadClearance = TOTAL_SURFACE_WIDTH/2 + 1.2; // matches populateScenery's own minimum lateral offset
 				const maxDistFromRoad = POI_MATCH_RADIUS_M; // shared with route.js's Overpass corridor query (same global scope, route.js loads first)
-				const maxPois = 400; // corridor-based fetching returns real density now (e.g. 2689 along one 11km corridor), so this needs headroom beyond the old bbox-fetch numbers
+				const maxPois = 400; // route.js fetches a landmark corridor (over-fetched a little wider than this, then filtered here); e.g. Paris->Versailles returns ~170, of which ~50 land within range
 
 				// Generic houses vastly outnumber hospitals/schools/fuel stations/train
 				// stations in OSM data, so filling the cap in fetch order lets houses

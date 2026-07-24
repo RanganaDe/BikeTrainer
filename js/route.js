@@ -170,32 +170,43 @@
 		// anything non-trivial, so try a list of mirrors in turn -- osm.ch answers this
 		// query in well under a second. All three send `Access-Control-Allow-Origin: *`,
 		// so they work from the browser.
+		// Order matters: we take the first mirror that returns a NON-empty result (see the
+		// empty-fallthrough in fetchPOIRequest). osm.ch is fast but only holds part of the
+		// planet (e.g. it returns 0 for anything in France), so it's first for the regions it
+		// does have but falls through cheaply otherwise. mail.ru is the reliable workhorse and
+		// comes before overpass-api.de, which is chronically overloaded (slow 504s / empties)
+		// and so is kept only as a last resort.
 		const OVERPASS_ENDPOINTS = [
 			'https://overpass.osm.ch/api/interpreter',
-			'https://overpass-api.de/api/interpreter',
 			'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+			'https://overpass-api.de/api/interpreter',
 		];
 
-		async function fetchPOIRequest(bboxStr) {
-			// The old query pulled every `building=yes` in the whole route bbox -- tens of
-			// thousands of generic footprints -- which is exactly what timed Overpass out.
-			// Requesting only explicitly-typed residential buildings keeps the real houses
-			// while dropping that catch-all, turning a 504 into a sub-second response.
+		async function fetchPOIRequest(aroundStr) {
+			// `aroundStr` is an Overpass `around:` filter body (radius + the route polyline's
+			// sampled lat/lon points) -- so every clause is constrained to a thin corridor
+			// hugging the road, NOT the route's whole bounding box. The old bbox query capped
+			// at 3000 elements spread across the entire rectangle, of which ~1% actually fell
+			// within the 90 m road corridor place3DPOIs keeps -- so on long/urban routes almost
+			// nothing got placed (that was the "no POIs on most routes" bug). The corridor makes
+			// nearly every result relevant.
+			//
+			// NO `building` clause: fetching buildings along a dense-city corridor (even a typed
+			// residential subset) is heavy enough that Overpass hits its own 25s timeout and
+			// returns EMPTY -- the very "no POIs" symptom, just via a different path. Generic
+			// roadside houses are already filled procedurally by populateScenery(), so Overpass
+			// only needs to supply the NAMED landmarks worth a distinct model. That keeps the
+			// query node-light and fast on the working mirrors.
+			// `nwr` = node+way+relation in one clause, which also keeps the request body small.
 			const query = `[out:json][timeout:25];(
-				node["amenity"~"^(hospital|school|fuel|place_of_worship)$"](${bboxStr});
-				way["amenity"~"^(hospital|school|fuel|place_of_worship)$"](${bboxStr});
-				node["railway"="station"](${bboxStr});
-				way["railway"="station"](${bboxStr});
-				node["shop"~"^(supermarket|bakery|convenience)$"](${bboxStr});
-				way["shop"~"^(supermarket|bakery|convenience)$"](${bboxStr});
-				node["leisure"~"^(park|playground)$"](${bboxStr});
-				way["leisure"~"^(park|playground)$"](${bboxStr});
-				node["man_made"="windmill"](${bboxStr});
-				way["man_made"="windmill"](${bboxStr});
-				way["building"~"^(house|residential|detached|semidetached_house|terrace)$"](${bboxStr});
-			);out center 3000;`;
+				nwr["amenity"~"^(hospital|school|fuel|place_of_worship)$"](${aroundStr});
+				nwr["railway"="station"](${aroundStr});
+				nwr["shop"~"^(supermarket|bakery|convenience)$"](${aroundStr});
+				nwr["leisure"~"^(park|playground)$"](${aroundStr});
+				nwr["man_made"="windmill"](${aroundStr});
+			);out center 2000;`;
 
-			let lastErr;
+			let lastErr, sawEmpty = false;
 			for(const endpoint of OVERPASS_ENDPOINTS) {
 				try {
 					const res = await fetch(endpoint, {method: 'POST', body: 'data=' + encodeURIComponent(query)});
@@ -206,22 +217,36 @@
 						throw err;
 					}
 					const data = await res.json();
-					return data.elements;
+					const elements = data.elements || [];
+					if(elements.length) return elements;
+					// A 200 with zero elements almost always means this mirror simply doesn't
+					// hold the route's region (e.g. overpass.osm.ch returns 0 for anything in
+					// France) -- so DON'T accept it and stop; fall through and let another
+					// mirror answer. Only if every reachable mirror agrees on empty is it real.
+					sawEmpty = true;
+					console.warn(`Overpass mirror returned 0 elements (${endpoint}); trying next`);
 				} catch(e) {
 					lastErr = e;
 					console.warn(`Overpass mirror failed (${endpoint}): ${e.message}`); // fall through to the next mirror
 				}
 			}
+			if(sawEmpty) return []; // every reachable mirror returned empty -- genuinely nothing here
 			throw lastErr || new Error('All Overpass mirrors failed');
 		}
 
 		async function fetchRoutePOIs(coords) {
-			const bbox = routeBBoxPadded(coords, POI_MATCH_RADIUS_M + 60);
-			const bboxStr = `${bbox.south},${bbox.west},${bbox.north},${bbox.east}`;
+			// Sample the route every ~300 m (capped) into an `around:` corridor. Each extra
+			// sample point makes Overpass measure distance to one more coordinate, so the count
+			// is kept modest to stay fast. The radius is widened to POI_MATCH_RADIUS_M + 100 so a
+			// POI 90 m off the road, midway between two 300 m-spaced points (~175 m from the
+			// nearest), is still caught; place3DPOIs then re-filters to the exact 90 m.
+			const pts = sampleRouteByDistance(0.3, 120);
+			const aroundStr = `around:${POI_MATCH_RADIUS_M + 100},`
+				+ pts.map(p => `${p.lat.toFixed(5)},${p.lng.toFixed(5)}`).join(',');
 
 			let elements;
 			try {
-				elements = await fetchPOIRequest(bboxStr);
+				elements = await fetchPOIRequest(aroundStr);
 			} catch(e) {
 				// A single retry, honoring Retry-After if the server sent one --
 				// this is now the ONLY Overpass call this feature makes per route,
@@ -230,7 +255,7 @@
 				console.error(`Overpass request failed, waiting ${delay}ms before retrying:`, e);
 				await sleep(delay);
 				try {
-					elements = await fetchPOIRequest(bboxStr);
+					elements = await fetchPOIRequest(aroundStr);
 				} catch(e2) {
 					logEvent('route', `Could not load nearby places from OpenStreetMap (Overpass may be busy): ${e2.message}`);
 					return [];
