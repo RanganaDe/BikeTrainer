@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A single-page, client-side-only bike trainer app ("Cadence Log"). It connects to Bluetooth cycling sensors via the Web Bluetooth API, shows live power/speed/cadence, follows a real-world route, renders a Three.js 3D ride view, logs rides to `localStorage`, and optionally syncs to Firebase for signed-in users.
 
-There is **no build system, no package.json, no tests, no linter config, and no bundler.** Everything is vanilla HTML/CSS/JS served as static files.
+There is **no build system, no bundler, and no linter config** for the app itself — everything is vanilla HTML/CSS/JS served as static files. The only exception is `test/`, a self-contained headless smoke test (its own `package.json`, not shipped with the app — see Testing below).
 
 The end goal is to have a 3D visualisation ready for the selected bike ride, where the 3D visual is almost close to real environment. 
 
@@ -21,6 +21,25 @@ python -m http.server 8000
 - Web Bluetooth requires **Chrome/Edge on desktop or Android**, or **Bluefy** on iOS/iPadOS (Apple blocks Web Bluetooth in all iOS browsers — see the banner logic in `js/diagnostics.js`).
 - **No sensor needed to test most things:** the "Simulate ride" button feeds fake telemetry through the exact same `updateSpeed/updatePower/updateCadence` path a real BLE packet uses, so the 3D view, stats, ride log, and cloud sync all behave identically. Use this for any change not specific to BLE parsing.
 - On-device debugging: `bike-tracker.html` has an inline on-page error console (top of `<head>`) that surfaces JS errors on screen, for browsers like Bluefy with no dev tools. The ▤ button opens a raw BLE packet log.
+
+## Testing
+
+```bash
+bash test/run-smoke.sh          # starts the server, runs the checks, tears down; exit 0 = pass
+```
+
+`test/smoke.js` is a headless Playwright smoke test — the app's one automated safety net. It
+loads the page, runs a **no-route simulated ride**, and asserts the core pipeline is alive:
+scripts load with no uncaught JS errors, the 3D view gets a WebGL canvas, live
+power/speed/cadence readouts update, the timer advances, and a finished ride persists to
+`localStorage`. Because it drives no route it calls no external data services (Nominatim/OSRM/
+Overpass/Open-Meteo) and is deterministic; it only needs the CDN `<script>`s at page load.
+
+Run it after any change with a runtime surface (telemetry, ride lifecycle, 3D init, history).
+It uses swiftshader for headless WebGL and reuses a globally-cached Playwright if present
+(else `cd test && npm install && npx playwright install chromium`). It is **not** a substitute
+for on-device checks of the 3D visuals — swiftshader lighting/geometry only approximates a real
+GPU (see the terrain-verification notes in `memory/`).
 
 ## Critical architecture constraint: one shared global scope
 

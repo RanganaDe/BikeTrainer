@@ -1,0 +1,13 @@
+{
+  "name": "cadence-log-test",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Headless smoke test for the Cadence Log bike tracker app. Not part of the app — the app itself stays build-free vanilla static files.",
+  "scripts": {
+    "test": "bash run-smoke.sh",
+    "postinstall-note": "after `npm install`, also run `npx playwright install chromium` once to fetch the browser"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.1"
+  }
+}
