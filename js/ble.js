@@ -47,13 +47,11 @@
 			if(totalDistP) {
 				const distanceM = dv.getUint8(offset) | (dv.getUint8(offset + 1)<<8) | (dv.getUint8(offset + 2)<<16);
 				offset += 3;
-				updateBikeDistance(distanceM);
 				parts.push(`distance=<b>${(distanceM/1000).toFixed(2)} km</b>`);
 			}
 			if(resistP) {
 				const resistance = dv.getInt16(offset, true);
 				offset += 2;
-				updateResistance(resistance);
 				parts.push(`resistance=${resistance}`);
 			}
 			if(instPowerP) {
@@ -95,7 +93,6 @@
 			if(elapsedP && offset + 1 < dv.byteLength) {
 				const elapsed = dv.getUint16(offset, true);
 				offset += 2;
-				updateBikeElapsed(elapsed);
 				parts.push(`bikeElapsed=<b>${fmtDuration(elapsed)}</b>`);
 			}
 			if(remainP && offset + 1 < dv.byteLength) {

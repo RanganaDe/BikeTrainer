@@ -1,6 +1,3 @@
-		const POWER_SCALE_MAX = 400; // watts mapped to full ring
-		const RING_CIRC = 2*Math.PI*65;
-
 		const els = {
 			statusDot: document.getElementById('statusDot'),
 			statusText: document.getElementById('statusText'),
@@ -14,14 +11,6 @@
 			debugCopy: document.getElementById('debugCopy'),
 			debugClear: document.getElementById('debugClear'),
 			unsupportedBanner: document.getElementById('unsupportedBanner'),
-			powerValue: document.getElementById('powerValue'),
-			speedValue: document.getElementById('speedValue'),
-			powerRing: document.getElementById('powerRing'),
-			cadenceValue: document.getElementById('cadenceValue'),
-			distanceValue: document.getElementById('distanceValue'),
-			resistanceValue: document.getElementById('resistanceValue'),
-			caloriesValue: document.getElementById('caloriesValue'),
-			elapsedValue: document.getElementById('elapsedValue'),
 			routeFrom: document.getElementById('routeFrom'),
 			routeTo: document.getElementById('routeTo'),
 			findRouteBtn: document.getElementById('findRouteBtn'),
@@ -55,9 +44,6 @@
 			logList: document.getElementById('logList'),
 			clearLog: document.getElementById('clearLog'),
 		};
-
-		els.powerRing.style.strokeDasharray = RING_CIRC;
-		els.powerRing.style.strokeDashoffset = RING_CIRC;
 
 		function escapeHtml(str) {
 			return String(str).replace(/[&<>"']/g, c => ({

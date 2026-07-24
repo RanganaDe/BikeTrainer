@@ -121,9 +121,38 @@
 				ctx.fillText(`${entry.routeTotalKm.toFixed(1)} km route`, 70, boxY + boxH + 84);
 			}
 
+			// Recap the interesting places surfaced during the ride (text only, so the
+			// canvas stays untainted and exportable). Facts only exist on routed rides.
+			if(entry.facts && entry.facts.length) {
+				const hasRoute = entry.routeCoords && entry.routeCoords.length > 1;
+				let fy = hasRoute ? 1560 : 900;
+				ctx.fillStyle = '#7c848c';
+				ctx.font = '600 26px "Space Grotesk", sans-serif';
+				ctx.fillText('DISCOVERED ALONG THE WAY', 70, fy);
+				fy += 46;
+
+				const fit = (str, maxW) => {
+					if(ctx.measureText(str).width <= maxW) return str;
+					while(str.length > 1 && ctx.measureText(str + '…').width > maxW) str = str.slice(0, -1);
+					return str + '…';
+				};
+				const maxFacts = 4;
+				ctx.font = '500 30px "Space Grotesk", sans-serif';
+				entry.facts.slice(0, maxFacts).forEach(f => {
+					ctx.fillStyle = '#ecedef';
+					ctx.fillText(fit('💡 ' + (f.title || ''), W - 140), 70, fy);
+					fy += 46;
+				});
+				if(entry.facts.length > maxFacts) {
+					ctx.fillStyle = '#7c848c';
+					ctx.font = '500 24px "JetBrains Mono", monospace';
+					ctx.fillText(`+${entry.facts.length - maxFacts} more`, 70, fy + 2);
+				}
+			}
+
 			ctx.fillStyle = '#4a5158';
 			ctx.font = '500 24px "JetBrains Mono", monospace';
-			ctx.fillText('cadence-log', 70, H - 60);
+			ctx.fillText('Ride Summary', 70, H - 60);
 
 			return canvas;
 		}

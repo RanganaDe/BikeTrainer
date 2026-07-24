@@ -71,9 +71,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     check('3D view: WebGL canvas present + sized', canvas.ok && canvas.w > 0 && canvas.h > 0,
       canvas.ok ? `${canvas.w}x${canvas.h}` : 'no gl context');
 
-    // Baseline: readouts start as the "–" placeholder, history starts empty-ish.
+    // Baseline: how many rides are already logged.
     const before = await page.evaluate(() => ({
-      power: document.getElementById('powerValue').textContent,
       history: (JSON.parse(localStorage.getItem('bike_tracker_history') || '[]')).length,
     }));
 
@@ -84,16 +83,17 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
     await sleep(2500); // let several 250ms sim ticks feed telemetry
 
-    // 4) Live readouts are updating with plausible numbers.
+    // 4) Live readouts are updating with plausible numbers. Live metrics now live only in
+    // the ride-view HUD (the standalone readout tiles were removed).
     const live = await page.evaluate(() => ({
-      power: document.getElementById('powerValue').textContent,
-      speed: document.getElementById('speedValue').textContent,
-      cadence: document.getElementById('cadenceValue').textContent,
+      power: document.getElementById('hudPower').textContent,
+      speed: document.getElementById('hudSpeed').textContent,
+      cadence: document.getElementById('hudCadence').textContent,
       timer: document.getElementById('timerDisplay').textContent,
     }));
-    check('telemetry: power reads a positive number', num(live.power) > 0, `power=${live.power}`);
-    check('telemetry: speed reads a positive number', num(live.speed) > 0, `speed=${live.speed}`);
-    check('telemetry: cadence reads a positive number', num(live.cadence) > 0, `cadence=${live.cadence}`);
+    check('telemetry: HUD power reads a positive number', num(live.power) > 0, `power=${live.power}`);
+    check('telemetry: HUD speed reads a positive number', num(live.speed) > 0, `speed=${live.speed}`);
+    check('telemetry: HUD cadence reads a positive number', num(live.cadence) > 0, `cadence=${live.cadence}`);
     check('timer: advanced past 00:00', live.timer.trim() !== '00:00', `timer=${live.timer}`);
 
     // Keep riding so total duration clears the 5s log threshold, then stop.

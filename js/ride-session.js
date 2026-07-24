@@ -16,6 +16,8 @@
 			powerCount = 0;
 			powerMax = 0;
 			distanceKm = 0;
+			// Fresh fact collection for this ride (facts are snapshotted onto the entry on stop).
+			if(typeof rideFacts !== 'undefined') rideFacts = [];
 			lastSpeedTs = performance.now();
 			if(els.hudDistance) els.hudDistance.textContent = '0.0';
 			if(els.hudTime) els.hudTime.textContent = '0:00';
@@ -74,16 +76,15 @@
 			els.timerDisplay.classList.remove('active');
 
 			if(duration >= 5) {
-				const caloriesNum = Number(els.caloriesValue.textContent);
 				const entry = {
 					ts: rideStartTs,
 					duration,
 					avgPower: powerCount ? Math.round(powerSum/powerCount) : 0,
 					maxPower: Math.round(powerMax),
 					distanceKm: distanceKm,
-					// Number.isFinite rejects both the '–' placeholder and any non-numeric
-					// tile text, so NaN never reaches storage/Firestore or the share image.
-					caloriesKcal: Number.isFinite(caloriesNum) ? caloriesNum : null,
+					// lastCalories is null until an FTMS energy packet arrives, so rides on
+					// sensors without it (or simulated rides) log null, never NaN.
+					caloriesKcal: (typeof lastCalories === 'number' && Number.isFinite(lastCalories)) ? lastCalories : null,
 				};
 				if(routeActive) {
 					entry.routeFrom = routeFromLabel;
@@ -91,6 +92,11 @@
 					entry.routeTotalKm = routeTotalKm;
 					entry.routeCoveredKm = Math.min(distanceKm, routeTotalKm);
 					entry.routeCoords = downsampleCoords(routeCoords, 80);
+				}
+				// Area facts surfaced during this ride (see route.js). Kept on the entry so the
+				// history fact log and share card can recap them after the ride.
+				if(typeof rideFacts !== 'undefined' && rideFacts.length) {
+					entry.facts = rideFacts.slice(0, 40); // bounded; a 500m cadence caps this anyway
 				}
 				const list = loadHistory();
 				list.push(entry);

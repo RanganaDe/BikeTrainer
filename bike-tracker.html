@@ -283,127 +283,6 @@
 			color: var(--power);
 		}
 
-		.readouts {
-			display: grid;
-			grid-template-columns:1fr 1fr;
-			gap: 14px;
-			margin-bottom: 18px;
-		}
-
-		.card {
-			background: var(--surface);
-			border: 1px solid var(--border);
-			border-radius: var(--radius);
-			padding: 22px 16px 18px;
-			display: flex;
-			flex-direction: column;
-			align-items: center;
-			justify-content: center;
-			position: relative;
-			min-height: 180px;
-		}
-
-		.ring-wrap {
-			position: relative;
-			width: 150px;
-			height: 150px;
-			display: flex;
-			align-items: center;
-			justify-content: center;
-		}
-
-		.ring-wrap svg {
-			position: absolute;
-			top: 0;
-			left: 0;
-			transform: rotate(-90deg);
-		}
-
-		.ring-bg {
-			fill: none;
-			stroke: var(--power-dim);
-			stroke-width: 6;
-		}
-
-		.ring-fg {
-			fill: none;
-			stroke: var(--power);
-			stroke-width: 6;
-			stroke-linecap: round;
-			stroke-dasharray: 408;
-			stroke-dashoffset: 408;
-			transition: stroke-dashoffset .4s ease;
-			filter: drop-shadow(0 0 6px rgba(244, 196, 48, .5));
-		}
-
-		.value {
-			font-family: 'JetBrains Mono', monospace;
-			font-weight: 700;
-			font-size: 42px;
-			font-variant-numeric: tabular-nums;
-			line-height: 1;
-		}
-
-		.value.power {
-			color: var(--power);
-		}
-
-		.value.speed {
-			color: var(--speed);
-			font-size: 48px;
-		}
-
-		.unit {
-			font-family: 'JetBrains Mono', monospace;
-			font-size: 11px;
-			letter-spacing: .16em;
-			color: var(--text-muted);
-			margin-top: 6px;
-			text-transform: uppercase;
-		}
-
-		.speed-card .value.speed {
-			margin-top: 0;
-		}
-
-		.stats-grid {
-			display: grid;
-			grid-template-columns:repeat(5, 1fr);
-			gap: 10px;
-			margin-bottom: 18px;
-		}
-
-		.stat-tile {
-			background: var(--surface);
-			border: 1px solid var(--border);
-			border-radius: 10px;
-			padding: 10px 8px;
-			text-align: center;
-		}
-
-		.stat-value {
-			font-family: 'JetBrains Mono', monospace;
-			font-weight: 700;
-			font-size: 17px;
-			font-variant-numeric: tabular-nums;
-			color: var(--text);
-		}
-
-		.stat-label {
-			font-family: 'JetBrains Mono', monospace;
-			font-size: 9px;
-			letter-spacing: .1em;
-			text-transform: uppercase;
-			color: var(--text-muted);
-			margin-top: 4px;
-		}
-
-		@media (max-width: 520px) {
-			.stats-grid {
-				grid-template-columns:repeat(3, 1fr);
-			}
-		}
-
 		.route-section {
 			margin-bottom: 32px;
 		}
@@ -811,17 +690,84 @@
 			text-align: center;
 		}
 
+		.log-entry {
+			border-bottom: 1px solid var(--border);
+		}
+
+		.log-entry:last-child {
+			border-bottom: none;
+		}
+
 		.log-row {
 			display: grid;
 			grid-template-columns:32px 1fr auto auto;
 			gap: 12px;
 			align-items: center;
 			padding: 14px 4px;
-			border-bottom: 1px solid var(--border);
 		}
 
-		.log-row:last-child {
-			border-bottom: none;
+		.log-facts-toggle {
+			display: inline-block;
+			margin-top: 4px;
+			padding: 0;
+			background: none;
+			border: none;
+			color: var(--speed);
+			font-family: 'Space Grotesk', sans-serif;
+			font-size: 11px;
+			font-weight: 600;
+			cursor: pointer;
+		}
+
+		.log-facts-toggle:hover {
+			text-decoration: underline;
+		}
+
+		.log-facts {
+			display: flex;
+			flex-direction: column;
+			gap: 12px;
+			padding: 4px 6px 16px 44px;
+			max-height: 300px;
+			overflow-y: auto;
+		}
+
+		.log-fact {
+			display: flex;
+			gap: 12px;
+			align-items: flex-start;
+		}
+
+		.log-fact-img {
+			width: 56px;
+			height: 56px;
+			flex-shrink: 0;
+			border-radius: 8px;
+			object-fit: cover;
+			background: var(--surface-2);
+			border: 1px solid var(--border);
+		}
+
+		.log-fact-head {
+			font-size: 13px;
+			font-weight: 600;
+			color: var(--text);
+			line-height: 1.35;
+		}
+
+		.log-fact-km {
+			color: var(--text-muted);
+			font-family: 'JetBrains Mono', monospace;
+			font-size: 11px;
+			font-weight: 500;
+			margin-left: 4px;
+		}
+
+		.log-fact-body {
+			margin-top: 3px;
+			color: var(--text-muted);
+			font-size: 12px;
+			line-height: 1.45;
 		}
 
 		.log-idx {
@@ -1005,19 +951,6 @@
 			font-family: 'Space Grotesk', sans-serif;
 		}
 
-		@media (max-width: 420px) {
-			.readouts {
-				grid-template-columns:1fr;
-			}
-
-			.value.power {
-				font-size: 38px;
-			}
-
-			.value.speed {
-				font-size: 44px;
-			}
-		}
 	</style>
 </head>
 <body>
@@ -1061,48 +994,6 @@
 			</div>
 		</div>
 		<div class="debug-list" id="debugList"></div>
-	</div>
-
-	<div class="readouts">
-		<div class="card power-card">
-			<div class="ring-wrap">
-				<svg width="150" height="150" viewBox="0 0 150 150">
-					<circle class="ring-bg" cx="75" cy="75" r="65"></circle>
-					<circle class="ring-fg" id="powerRing" cx="75" cy="75" r="65"></circle>
-				</svg>
-				<div>
-					<div class="value power" id="powerValue">–</div>
-				</div>
-			</div>
-			<div class="unit">watts</div>
-		</div>
-		<div class="card speed-card">
-			<div class="value speed" id="speedValue">–</div>
-			<div class="unit">km/h</div>
-		</div>
-	</div>
-
-	<div class="stats-grid">
-		<div class="stat-tile">
-			<div class="stat-value" id="cadenceValue">–</div>
-			<div class="stat-label">Cadence rpm</div>
-		</div>
-		<div class="stat-tile">
-			<div class="stat-value" id="distanceValue">–</div>
-			<div class="stat-label">Distance km</div>
-		</div>
-		<div class="stat-tile">
-			<div class="stat-value" id="resistanceValue">–</div>
-			<div class="stat-label">Resistance</div>
-		</div>
-		<div class="stat-tile">
-			<div class="stat-value" id="caloriesValue">–</div>
-			<div class="stat-label">Kcal</div>
-		</div>
-		<div class="stat-tile">
-			<div class="stat-value" id="elapsedValue">–</div>
-			<div class="stat-label">Bike timer</div>
-		</div>
 	</div>
 
 	<div class="ride3d-section">

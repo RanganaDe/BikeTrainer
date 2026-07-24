@@ -47,18 +47,51 @@
 				const routeBadge = r.routeFrom
 					? `<span class="log-route-badge">↝ ${escapeHtml(r.routeFrom)} → ${escapeHtml(r.routeTo)} (${r.routeTotalKm.toFixed(1)}km)</span>`
 					: '';
-				return `<div class="log-row">
-        <div class="log-idx">${idx}</div>
-        <div class="log-date">${date}<span class="time">${time} · ${fmtDuration(r.duration)}</span>${routeBadge}</div>
-        <div class="log-stats"><b>${r.avgPower}</b>W avg &nbsp;·&nbsp; <b>${shownKm.toFixed(1)}</b>km</div>
-        <button class="log-share-btn" data-ts="${r.ts}">Share</button>
+				const facts = Array.isArray(r.facts) ? r.facts : [];
+				const factsToggle = facts.length
+					? `<button class="log-facts-toggle" data-ts="${r.ts}" aria-expanded="false">💡 ${facts.length} fact${facts.length === 1 ? '' : 's'} discovered</button>`
+					: '';
+				const factsPanel = facts.length
+					? `<div class="log-facts" data-ts="${r.ts}" hidden>${facts.map(renderFactCard).join('')}</div>`
+					: '';
+				return `<div class="log-entry">
+        <div class="log-row">
+          <div class="log-idx">${idx}</div>
+          <div class="log-date">${date}<span class="time">${time} · ${fmtDuration(r.duration)}</span>${routeBadge}${factsToggle}</div>
+          <div class="log-stats"><b>${r.avgPower}</b>W avg &nbsp;·&nbsp; <b>${shownKm.toFixed(1)}</b>km</div>
+          <button class="log-share-btn" data-ts="${r.ts}">Share</button>
+        </div>${factsPanel}
       </div>`;
 			}).join('');
+		}
+
+		// One card in the expandable per-ride fact log. Thumbnail is optional (hidden on 404).
+		function renderFactCard(f) {
+			const km = (f.atKm != null) ? `<span class="log-fact-km">${Number(f.atKm).toFixed(1)} km</span>` : '';
+			const img = f.thumb
+				? `<img class="log-fact-img" src="${escapeHtml(f.thumb)}" alt="" loading="lazy" onerror="this.style.display='none'">`
+				: '';
+			return `<div class="log-fact">${img}
+        <div class="log-fact-text">
+          <div class="log-fact-head">💡 ${escapeHtml(f.title || '')} ${km}</div>
+          <div class="log-fact-body">${escapeHtml(f.text || '')}</div>
+        </div>
+      </div>`;
 		}
 
 		renderHistory();
 
 		els.logList.addEventListener('click', (e) => {
+			const toggle = e.target.closest('.log-facts-toggle');
+			if(toggle) {
+				const panel = els.logList.querySelector(`.log-facts[data-ts="${toggle.dataset.ts}"]`);
+				if(panel) {
+					const open = panel.hasAttribute('hidden');
+					panel.toggleAttribute('hidden', !open);
+					toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+				}
+				return;
+			}
 			const btn = e.target.closest('.log-share-btn');
 			if(!btn) return;
 			const ts = Number(btn.dataset.ts);

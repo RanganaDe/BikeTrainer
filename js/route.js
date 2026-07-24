@@ -24,6 +24,7 @@
 		let lastFactMilestone = -1;      // highest 500 m milestone already surfaced
 		let shownFactTitles = new Set(); // article titles already shown, so we don't repeat
 		let areaFactHideTimer = null;    // auto-hide timer for the fact panel
+		let rideFacts = [];              // facts surfaced during the CURRENT ride, snapshotted onto the ride entry on stop (see ride-session.js)
 
 		// The fact panel can also read its text aloud (Web Speech API). Default on;
 		// muting persists so the choice sticks across rides. Speech needs a prior user
@@ -687,6 +688,7 @@
 				// Reset the 500 m fact milestones for this fresh route.
 				lastFactMilestone = -1;
 				shownFactTitles = new Set();
+				rideFacts = [];
 				clearTimeout(areaFactHideTimer);
 				stopSpeakingFact();
 				if(els.areaFactPanel) els.areaFactPanel.classList.remove('show');
@@ -970,7 +972,7 @@
 				.sort((a, b) => (a.index || 0) - (b.index || 0));
 		}
 
-		async function showAreaFactAt(lat, lng, myRun) {
+		async function showAreaFactAt(lat, lng, myRun, atKm) {
 			if(!els.areaFactPanel) return;
 			let list;
 			try {
@@ -992,6 +994,14 @@
 
 			els.areaFactTitle.textContent = `💡 ${pick.title}`;
 			els.areaFactBody.textContent = text;
+
+			// Keep a copy for this ride's history entry + share card (see stopRide).
+			rideFacts.push({
+				title: pick.title,
+				text,
+				thumb: (pick.thumbnail && pick.thumbnail.source) || null,
+				atKm: typeof atKm === 'number' ? +atKm.toFixed(2) : null,
+			});
 
 			// Show the article's thumbnail if it has one; hide the <img> otherwise so the
 			// card falls back to text-only. onerror also hides it if the image 404s.
@@ -1084,7 +1094,7 @@
 			const milestone = Math.floor(clamped / FACT_INTERVAL_KM);
 			if(milestone >= 1 && milestone > lastFactMilestone) {
 				lastFactMilestone = milestone;
-				showAreaFactAt(lat, lng, routeGeneration);
+				showAreaFactAt(lat, lng, routeGeneration, clamped);
 			}
 		}
 
